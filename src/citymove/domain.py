@@ -304,12 +304,12 @@ class Trip:
 
 class Network:
     """
-    Головний контейнер (граф), який зберігає весь стан транспортної системи.
+    Головний контейнер, який зберігає стан транспортної системи.
 
     Атрибути:
-        stops (dict[str, Stop]): Словник усіх зупинок, де ключ — ID зупинки, значення — об'єкт Stop.
-        routes (dict[str, Route]): Словник усіх маршрутів, де ключ — ID маршруту, значення — об'єкт Route.
-        trips (dict[str, Trip]): Словник усіх рейсів, де ключ — ID рейсу, значення — об'єкт Trip.
+        stops (dict[str, Stop]): Словник усіх зупинок, де ключ - ID зупинки, значення — об'єкт Stop.
+        routes (dict[str, Route]): Словник усіх маршрутів, де ключ - ID маршруту, значення - об'єкт Route.
+        trips (dict[str, Trip]): Словник усіх рейсів, де ключ - ID рейсу, значення - об'єкт Trip.
         transfer_time (int): Час на пересадку між рейсами у хвилинах (за замовчуванням 5 хвилин).
         edges (dict[str, list[tuple[str, int, int, str]]]): Список суміжності графа для алгоритму Дейкстри.
             Формат: {from_stop_id: [(to_stop_id, departure_min, travel_min, trip_id), ...]}
@@ -323,3 +323,69 @@ class Network:
         self.transfer_time: int = transfer_time
         
         self.edges: dict[str, list[tuple[str, int, int, str]]] = {}
+    
+    def add_node(self, stop: Stop) -> None:
+        """
+        Додає нову зупинку (вузол) до мережі.
+        
+        Винятки:
+        ValueError: Якщо зупинка з таким ID вже існує
+        """
+        if stop.stop_id in self.stops:
+            raise ValueError(f"Зупинка з ID '{stop.stop_id}' вже існує в мережі")
+        self.stops[stop.stop_id] = stop
+        if stop.stop_id not in self.edges:
+            self.edges[stop.stop_id] = []
+
+    def remove_node(self, stop_id: str) -> None:
+        """
+        Видаляє зупинку з мережі за її ідентифікатором, перевіряючи зв'язність графа
+        
+        Винятки:
+        StopNotFoundError: Якщо зупинку не знайдено
+        DisconnectedNetworkError: Якщо видалення зупинки порушить зв'язність решти графа.
+        """
+        if stop_id not in self.stops:
+            raise StopNotFoundError(f"Зупинку з ID '{stop_id}' не знайдено в мережі")
+
+        # тимчасово видаляємо зупинку та ребра для перевірки зв'язності
+        backup_stop = self.stops.pop(stop_id)
+        backup_edges = self.edges.pop(stop_id, [])
+        
+        incoming_backup = {}
+        for node, neighbors in self.edges.items():
+            filtered = [e for e in neighbors if e[0] != stop_id]
+            incoming_backup[node] = neighbors
+            self.edges[node] = filtered
+
+        remaining_stops = list(self.stops.keys())
+        if len(remaining_stops) > 1:
+            if not self._is_connected_graph(remaining_stops):
+                # відновлюємо назад, бо видалення ламає зв'язність
+                self.stops[stop_id] = backup_stop
+                self.edges[stop_id] = backup_edges
+                for node, neighbors in incoming_backup.items():
+                    self.edges[node] = neighbors
+                raise DisconnectedNetworkError(
+                    f"Видалення зупинки '{stop_id}' призведе до розриву транспортної мережі"
+                )
+
+    def _is_connected_graph(self, node_ids: list[str]) -> bool:
+        """Перевірка зв'язності графа за допомогою BFS"""
+        if not node_ids:
+            return True
+
+        start_node = node_ids[0]
+        visited = set()
+        queue = [start_node]
+        visited.add(start_node)
+
+        while queue:
+            current = queue.pop(0)
+            for neighbor_edge in self.edges.get(current, []):
+                neighbor_id = neighbor_edge[0]
+                if neighbor_id in self.stops and neighbor_id not in visited:
+                    visited.add(neighbor_id)
+                    queue.append(neighbor_id)
+
+        return all(n in visited for n in node_ids)
