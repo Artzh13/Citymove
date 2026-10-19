@@ -1,9 +1,11 @@
 import csv
 from pathlib import Path
 from typing import Iterator
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .domain import (
     Bus, Metro, Network, Route, ScheduleError, Stop, Tram, TransportUnit, Trip, Trolleybus,
+    StopNotFoundError, RouteNotFoundError,
 )
 
 Schedule = list[tuple[str, int, int]]
@@ -199,12 +201,191 @@ def build_network(stops: dict[str, Stop], routes: dict[str, Route],
     return network
 
 
+
+class FeedValidationReport:
+    """
+    Звіт за результатами валідації GTFS-фіда.
+
+    Атрибути:
+        errors (list[str]): Список критичних помилок цілісності або структури.
+        warnings (list[str]): Список некритичних зауважень (напр. порожні необов'язкові поля).
+    """
+
+    def __init__(self) -> None:
+        self.errors: list[str] = []
+        self.warnings: list[str] = []
+
+    @property
+    def is_valid(self) -> bool:
+        """Повертає True, якщо немає критичних помилок у фіді."""
+        return len(self.errors) == 0
+
+    def add_error(self, message: str) -> None:
+        """Додає повідомлення про помилку у звіт."""
+        self.errors.append(message)
+
+    def add_warning(self, message: str) -> None:
+        """Додає повідомлення про попередження у звіт."""
+        self.warnings.append(message)
+
+
+def load_agency_timezone(path: str | Path) -> str:
+    """
+    Зчитує та валідує часову зону агентства з agency.txt.
+
+    :param path: шлях до agency.txt
+    :return: назва часової зони (наприклад, 'Europe/Kyiv')
+    :raises ScheduleError: якщо файл не знайдено, поле agency_timezone відсутнє або зона некоректна
+    """
+    path = Path(path)
+    if not path.exists():
+        raise ScheduleError(f"Файл agency не знайдено: {path}")
+
+    for row in read_csv(path):
+        tz_name = row.get('agency_timezone', '').strip()
+        if not tz_name:
+            raise ScheduleError("Поле 'agency_timezone' порожнє або відсутнє в agency.txt")
+        try:
+            ZoneInfo(tz_name)
+        except (ZoneInfoNotFoundError, KeyError, ValueError):
+            raise ScheduleError(f"Некоректна або невідома часова зона: '{tz_name}'") from None
+        return tz_name
+
+    raise ScheduleError("Файл agency.txt не містить жодного запису")
+
+
+def get_timezone(tz_name: str) -> ZoneInfo:
+    """
+    Повертає об'єкт ZoneInfo для заданої назви часової зони.
+
+    :param tz_name: назва часової зони за стандартом IANA (напр. 'Europe/Kyiv')
+    :return: об'єкт ZoneInfo
+    :raises ScheduleError: якщо назву зони не знайдено в базі даних IANA
+    """
+    try:
+        return ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, KeyError, ValueError):
+        raise ScheduleError(f"Невідома або некоректна часова зона: '{tz_name}'") from None
+
+
+REQUIRED_GTFS_HEADERS: dict[str, set[str]] = {
+    'stops.txt': {'stop_id', 'stop_name', 'stop_lat', 'stop_lon'},
+    'routes.txt': {'route_id', 'route_short_name', 'route_type'},
+    'trips.txt': {'route_id', 'trip_id', 'service_id'},
+    'stop_times.txt': {'trip_id', 'stop_id', 'arrival_time', 'departure_time', 'stop_sequence'},
+}
+
+
+def validate_feed(folder: str | Path, strict: bool = False) -> FeedValidationReport:
+    """
+    Валідує структуру та посилальну цілісність GTFS-фіда.
+
+    Перевіряє:
+      - Наявність обов'язкових файлів та стовпців;
+      - Коректність часової зони в agency.txt (якщо файл присутній);
+      - Посилальну цілісність: чи кожен stop_id зі stop_times існує в stops;
+      - Посилальну цілісність: чи кожен route_id з trips існує в routes.
+
+    :param folder: шлях до папки з файлами GTFS
+    :param strict: якщо True, негайно викидає виняток при критичних помилках
+                   (StopNotFoundError, RouteNotFoundError, ScheduleError)
+    :return: об'єкт FeedValidationReport зі списком знайдених помилок та попереджень
+    :raises StopNotFoundError: у строгому режимі, якщо зупинку не знайдено
+    :raises RouteNotFoundError: у строгому режимі, якщо маршрут не знайдено
+    :raises ScheduleError: у строгому режимі, якщо файли чи обов'язкові поля відсутні
+    """
+    folder = Path(folder)
+    report = FeedValidationReport()
+
+    for filename, required_cols in REQUIRED_GTFS_HEADERS.items():
+        file_path = folder / filename
+        if not file_path.exists():
+            msg = f"Обов'язковий файл {filename} відсутній у фіді"
+            report.add_error(msg)
+            if strict:
+                raise ScheduleError(msg)
+            continue
+
+        try:
+            with open(file_path, mode='r', encoding='utf-8-sig', newline='') as f:
+                reader = csv.reader(f)
+                header = next(reader, None)
+                if header is None:
+                    msg = f"Файл {filename} порожній"
+                    report.add_error(msg)
+                    if strict:
+                        raise ScheduleError(msg)
+                    continue
+                missing_cols = required_cols - set(header)
+                if missing_cols:
+                    msg = f"У {filename} відсутні обов'язкові колонки: {sorted(missing_cols)}"
+                    report.add_error(msg)
+                    if strict:
+                        raise ScheduleError(msg)
+        except OSError as exc:
+            msg = f"Помилка читання файлу {filename}: {exc}"
+            report.add_error(msg)
+            if strict:
+                raise ScheduleError(msg) from exc
+
+    agency_path = folder / 'agency.txt'
+    if agency_path.exists():
+        try:
+            load_agency_timezone(agency_path)
+        except ScheduleError as exc:
+            report.add_error(str(exc))
+            if strict:
+                raise
+
+    if not (folder / 'stops.txt').exists() or not (folder / 'stop_times.txt').exists():
+        return report
+
+    known_stops: set[str] = set()
+    for row in read_csv(folder / 'stops.txt'):
+        stop_id = row.get('stop_id', '').strip()
+        if stop_id:
+            known_stops.add(stop_id)
+
+    missing_stops: set[str] = set()
+    for row in read_csv(folder / 'stop_times.txt'):
+        stop_id = row.get('stop_id', '').strip()
+        if stop_id and stop_id not in known_stops:
+            missing_stops.add(stop_id)
+
+    for missing in sorted(missing_stops):
+        msg = f"Зупинку '{missing}' зі stop_times.txt не знайдено у stops.txt"
+        report.add_error(msg)
+        if strict:
+            raise StopNotFoundError(msg)
+
+    if (folder / 'routes.txt').exists() and (folder / 'trips.txt').exists():
+        known_routes: set[str] = set()
+        for row in read_csv(folder / 'routes.txt'):
+            route_id = row.get('route_id', '').strip()
+            if route_id:
+                known_routes.add(route_id)
+
+        missing_routes: set[str] = set()
+        for row in read_csv(folder / 'trips.txt'):
+            route_id = row.get('route_id', '').strip()
+            if route_id and route_id not in known_routes:
+                missing_routes.add(route_id)
+
+        for missing in sorted(missing_routes):
+            msg = f"Маршрут '{missing}' з trips.txt не знайдено у routes.txt"
+            report.add_error(msg)
+            if strict:
+                raise RouteNotFoundError(msg)
+
+    return report
+
+
 def load_network(folder: str | Path, transfer_time: int = 5) -> Network:
     """
-    Завантажує GTFS-фід із папки та будує мережу.
+    Завантажує GTFS-фід із папки, визначає часову зону та будує мережу.
     :param folder: шлях до папки з файлами GTFS (напр. data/gtfs_static)
     :param transfer_time: час на пересадку у хвилинах
-    :return: готовий Network
+    :return: готовий Network із полем timezone
     """
     folder = Path(folder)
 
@@ -214,4 +395,12 @@ def load_network(folder: str | Path, transfer_time: int = 5) -> Network:
 
     routes = load_routes(folder / 'routes.txt', trip_rows, stop_times)
     trips = load_trips(trip_rows, routes, stop_times)
-    return build_network(stops, routes, trips, transfer_time)
+    network = build_network(stops, routes, trips, transfer_time)
+
+    agency_path = folder / 'agency.txt'
+    if agency_path.exists():
+        network.timezone = load_agency_timezone(agency_path)
+    else:
+        network.timezone = 'UTC'
+
+    return network
