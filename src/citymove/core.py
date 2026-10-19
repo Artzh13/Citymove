@@ -1,5 +1,5 @@
 import heapq
-import domain
+from citymove import domain
 
 INF: float = 1e18
 
