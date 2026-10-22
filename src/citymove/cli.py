@@ -1,4 +1,7 @@
 import argparse
+from citymove.dataio import load_network
+from citymove.infra import logger, timed, log_call
+from citymove.core import TransportRouter
 # треба заімпортити функції з інших модулів та дописати їх нижче
 
 def create_parser() -> argparse.ArgumentParser:
@@ -6,7 +9,7 @@ def create_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="citymove",
-        description="симулятор міської транспортної мережі"
+        description="СИМУЛЯТОР МІСЬКОЇ ТРАНСПОРТНОЇ МЕРЕЖІ"
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -58,34 +61,61 @@ def create_parser() -> argparse.ArgumentParser:
 
     return parser
 
-
+@timed
+@log_call
 def handle_route(args: argparse.Namespace) -> None:
     """обробник для route"""
-    print(f"Пошук шляху: {args.from_stop} -> {args.to_stop} на час {args.time}...")
+    logger.info(f"Пошук шляху: {args.from_stop} -> {args.to_stop} на час {args.time}...")
     
-     #використання функції друку з фейковими даними
-     #потім замінити на функцію з core.py яка шукає маршрут
-    fake_data = {
-        "start": args.from_stop,
-        "end": args.to_stop,
-        "total_time": 20,
-        "stops": [args.from_stop, "Проміжна зупинка", args.to_stop]
-    } 
-    print_route_info(fake_data)
+    try:
+        #Завантажуємо мережу (тут можна вказати шлях до  фіда, наприклад, 'data/gtfs.zip' або додати аргумент --feed у парсер route)
+        feed_path = getattr(args, "feed", "data/gtfs.zip") 
+        network = load_network(feed_path)
+        
+        router = TransportRouter(network)
+        
+        # Конвертуємо час із рядка "HH:MM" у хвилини від початку доби (float)
+        try:
+            hours, minutes = map(int, args.time.split(":"))
+            time_0 = float(hours * 60 + minutes)
+        except ValueError:
+            logger.error(f"Невірний формат часу: {args.time}. Використовуйте HH:MM")
+            print("Помилка: невірний формат часу. Використовуйте формат HH:MM (наприклад, 09:00).")
+            return
 
+        #Викликаємо метод пошуку найкоротшого шляху
+        total_time_min = router.shortest_path_from(args.from_stop, args.to_stop, time_0)
+        
+        print("\n--- ЗНАЙДЕНИЙ МАРШРУТ ---")
+        print(f"Початкова точка: {args.from_stop}")
+        print(f"Кінцева точка:   {args.to_stop}")
+        print(f"Час відправлення: {args.time}")
+        print(f"Загальний час у дорозі: {total_time_min - time_0:.1f} хв (прибуття о ...)")
+        print("-------------------------\n")
+        
+    except Exception as e:
+        logger.error(f"Помилка під час пошуку маршруту: {e}")
+        print(f"Помилка: {e}")
 
+@timed
+@log_call
 def handle_stats(args: argparse.Namespace) -> None:
     """обробник для stats"""
-    print(f"Аналіз GTFS-фіда з джерела: {args.feed}...")
+    logger.info(f"Аналіз GTFS-фіда з джерела: {args.feed}...")
     
-    # використання функції друку з фейковими даними
-    #потім замінити на функцію з dataio.py
-    fake_stats = {
-        "stops_count": 150,
-        "routes_count": 12,
-        "trips_count": 450
-    }
-    print_feed_stats(fake_stats)
+    try:
+        # викликаємо load_network із dataio.py для завантаження реальних даних
+        network = load_network(args.feed)
+        
+        # Формуємо словник зі статистикою на основі завантаженої мережі
+        real_stats = {
+            "stops_count": len(network.stops),
+            "routes_count": len(network.routes),
+            "trips_count": len(network.trips)
+        }
+        print_feed_stats(real_stats)
+    except Exception as e:
+        logger.info(f"Помилка при завантаженні фіда: {e}")
 
 
 def handle_draw(args: argparse.Namespace) -> None:
