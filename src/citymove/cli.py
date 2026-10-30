@@ -69,7 +69,7 @@ def handle_route(args: argparse.Namespace) -> None:
     
     try:
         #Завантажуємо мережу (тут можна вказати шлях до  фіда, наприклад, 'data/gtfs.zip' або додати аргумент --feed у парсер route)
-        feed_path = getattr(args, "feed", "data/gtfs.zip") 
+        feed_path = "data/gtfs_static"
         network = load_network(feed_path)
         
         router = TransportRouter(network)
