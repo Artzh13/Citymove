@@ -162,6 +162,18 @@ class TestDataio(unittest.TestCase):
 
             network = load_network(folder)
             self.assertEqual(network.timezone, "Europe/Kyiv")
+            
+    def test_validate_feed_missing_files(self):
+        """Перевірка реакції валідатора на повністю порожню папку або відсутність файлів."""
+        with tempfile.TemporaryDirectory() as folder:
+            report = validate_feed(folder)
+            self.assertFalse(report.is_valid)
+            #перевіряємо, що у звіті є помилки про відсутність обов'язкових файлів
+            self.assertTrue(any("відсутній" in err for err in report.errors))
+            
+            #в strict-режимі має кидати помилку ScheduleError
+            with self.assertRaises(ScheduleError):
+                validate_feed(folder, strict=True)
 
 
 if __name__ == '__main__':
