@@ -1,3 +1,5 @@
+import json
+import os
 import logging
 import time
 from functools import wraps
@@ -8,6 +10,21 @@ from functools import wraps
 # ERROR — серйозна помилка, через яку певна функція чи команда не змогла виконатися.
 # CRITICAL — критична системна помилка.
 
+def load_config(config_path="config.json") -> dict:
+    """Завантажує конфігураційні параметри з JSON-файлу"""
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        logger.warning(f"Файл конфігурації {config_path} не знайдено. Використовуються стандартні налаштування.")
+        return {
+            "transfer_penalty_min": 5,
+            "walking_speed_kmh": 4.5,
+            "default_feed_path": "data/gtfs_static"
+        }
+    except json.JSONDecodeError as e:
+        logger.error(f"Помилка читання конфігурації {config_path}: {e}")
+        return {}
 
 # Логування - запис всього (що виводиться в консоль) у файл
 def setup_logging():
@@ -57,4 +74,30 @@ def log_call(func):#Оголошення декоратора
         except Exception as e:
             logger.error(f"Виняток у функції '{func.__name__}': {e}", exc_info=True)
             raise
+    return wrapper
+
+def memoize(func):
+    """
+    Декоратор для кешування результатів виконання функції (наприклад, знайдених шляхів).
+    Зберігає результати у словнику за ключем, що складається з аргументів виклику.
+    """
+    cache = {}
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        # Створюємо унікальний ключ з позиційних та іменованих аргументів
+        # Перетворюємо словник kwargs у відсортований кортеж для хешування
+        key = (args, tuple(sorted(kwargs.items())))
+        
+        if key in cache:
+            logger.info(f"Використано закешований результат для '{func.__name__}' з аргументами: {key}")
+            return cache[key]
+        
+        result = func(*args, **kwargs)
+        cache[key] = result
+        return result
+
+    # Додаємо можливість очистити кеш (корисно для тестів)
+    wrapper.cache_clear = lambda: cache.clear()
+    
     return wrapper

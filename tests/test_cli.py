@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.citymove.cli import create_parser, main, parse_time, format_time
-from src.citymove.infra import timed, log_call
+from src.citymove.cli import create_parser, main, parse_time, format_time, DEFAULT_FEED, DEFAULT_PENALTY, CONFIG
+from src.citymove.infra import timed, log_call, memoize
 
 MINI_FEED = str(Path(__file__).parent / "fixtures" / "mini_gtfs")
 
@@ -52,6 +52,23 @@ class TestCityMoveCLI(unittest.TestCase):
         self.assertEqual(args.time, 540.0)
         self.assertEqual(args.feed, "data/gtfs_static")
         self.assertEqual(args.penalty, 5.0)
+
+    def test_defaults_come_from_config(self) -> None:
+        """значення за замовчуванням --feed і --penalty беруться з config.json"""
+        self.assertEqual(DEFAULT_FEED, CONFIG["default_feed_path"])
+        self.assertEqual(DEFAULT_PENALTY, float(CONFIG["transfer_penalty_min"]))
+        self.assertTrue(Path(DEFAULT_FEED).is_absolute() or (Path(__file__).parent.parent / DEFAULT_FEED).exists())
+
+    def test_draw_arguments_parsing(self) -> None:
+        """Перевірка розбору аргументів для команди draw"""
+        args = self.parser.parse_args(["draw", "--out", "map.png"])
+        self.assertEqual(args.command, "draw")
+        self.assertEqual(args.out, "map.png")
+
+    def test_route_invalid_time_format(self) -> None:
+        """Невірний формат часу відхиляється ще на етапі розбору аргументів"""
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.parser.parse_args(["route", "--from", "A", "--to", "B", "--time", "invalid_time"])
 
 
 class TestTimeHelpers(unittest.TestCase):
@@ -157,6 +174,29 @@ class TestInfraDecorators(unittest.TestCase):
 
         with self.assertRaises(ZeroDivisionError):
             bad_func()
+
+    def test_memoize_decorator(self):
+        """Перевіряємо, чи `@memoize` дійсно кешує результат і не викликає функцію вдруге."""
+        call_count = 0
+
+        @memoize
+        def expensive_computation(x):
+            nonlocal call_count
+            call_count += 1
+            return x * x
+
+        # Перший виклик (функція має виконатися)
+        self.assertEqual(expensive_computation(4), 16)
+        self.assertEqual(call_count, 1)
+
+        # Другий виклик з тими ж аргументами (має повернути з кешу)
+        self.assertEqual(expensive_computation(4), 16)
+        self.assertEqual(call_count, 1)
+
+        # Після cache_clear функція виконується знову
+        expensive_computation.cache_clear()
+        expensive_computation(4)
+        self.assertEqual(call_count, 2)
 
 
 if __name__ == "__main__":
