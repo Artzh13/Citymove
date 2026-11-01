@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 from src.citymove.domain import Stop, StopNotFoundError, Trip, Route, Bus, Metro
 from src.citymove.analytics import stop_info_table, departure_board_table
 
@@ -79,7 +80,33 @@ class TestAnalytics(unittest.TestCase):
             self.assertEqual(metro.name(), "Метро")
 
     
+    @patch('matplotlib.pyplot.show')
+    def test_plot_interval_histogram(self, mock_show):
+        """Тест побудови гістограми (без фактичного виводу вікна на екран)"""
+        bus_unit = Bus()
+        sample_route = Route(route_id="r1", short_name="1", transport=bus_unit, stops=["S1"])
+        trips = [
+            Trip(trip_id="T1", route=sample_route, start_time=600, service_id="w", stop_times=[]),
+            Trip(trip_id="T2", route=sample_route, start_time=615, service_id="w", stop_times=[])
+        ]
+        from src.citymove.analytics import plot_interval_histogram
+        plot_interval_histogram(trips)
+        mock_show.assert_called_once()
 
+    def test_route_intervals_table_success(self):
+        """Тест генерації таблиці інтервалів руху для маршруту"""
+        bus_unit = Bus()
+        sample_route = Route(route_id="r1", short_name="1", transport=bus_unit, stops=["S1"])
+        trips = [
+            Trip(trip_id="T1", route=sample_route, start_time=600, service_id="w", stop_times=[]),
+            Trip(trip_id="T2", route=sample_route, start_time=615, service_id="w", stop_times=[]),
+            Trip(trip_id="T3", route=sample_route, start_time=645, service_id="w", stop_times=[])
+        ]
+        from src.citymove.analytics import route_intervals_table
+        table = route_intervals_table("r1", trips)
+        self.assertIn("ІНТЕРВАЛИ РУХУ", table)
+        self.assertIn("15", table) # Мін
+        self.assertIn("30", table) # Макс
 
 if __name__ == '__main__':
     unittest.main()
