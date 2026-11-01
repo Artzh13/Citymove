@@ -4,21 +4,33 @@ class NetworkError(Exception):
     """Базовий клас для всіх помилок транспортної мережі."""
     pass
 
-class StopNotFoundError(NetworkError):
+class StopNotFoundError(NetworkError): 
     """Виняток, що викидається, якщо зупинку не знайдено в мережі."""
-    pass
+    def __init__(self, stop_id: str):
+        super().__init__(f"Зупинку з ID {stop_id} не знайдено!")
+        self.stop_id = stop_id
 
 class RouteNotFoundError(NetworkError):
     """Виняток, що викидається, якщо маршрут не знайдено в мережі."""
-    pass
+    def __init__(self, from_stop_or_msg: str, to_stop: str = ""):
+        if to_stop:
+            super().__init__(f"Не вдалося знайти маршрут від {from_stop_or_msg} до {to_stop}!")
+            self.from_stop = from_stop_or_msg
+            self.to_stop = to_stop
+        else:
+            super().__init__(from_stop_or_msg)
+            self.from_stop = ""
+            self.to_stop = ""
 
 class DisconnectedNetworkError(NetworkError):
     """Виняток, що викидається, якщо видалення вузла призведе до розриву мережі."""
-    pass
+    def __init__(self, message: str = "Операція призводить до розриву звʼязності транспортної системи!"):
+        super().__init__(message)
 
 class ScheduleError(NetworkError):
     """Виняток, що викидається при помилках у розкладі (наприклад, некоректний час)."""
-    pass
+    def __init__(self, message: str = "Виявлено помилку у часі або розкладі рейсів!"):
+        super().__init__(message)
 
 
 class Stop:
@@ -346,7 +358,7 @@ class Network:
         DisconnectedNetworkError: Якщо видалення зупинки порушить зв'язність решти графа.
         """
         if stop_id not in self.stops:
-            raise StopNotFoundError(f"Зупинку з ID '{stop_id}' не знайдено в мережі")
+            raise StopNotFoundError(stop_id)
 
         # тимчасово видаляємо зупинку та ребра для перевірки зв'язності
         backup_stop = self.stops.pop(stop_id)
@@ -357,6 +369,8 @@ class Network:
             filtered = [e for e in neighbors if e[0] != stop_id]
             incoming_backup[node] = neighbors
             self.edges[node] = filtered
+
+
 
         remaining_stops = list(self.stops.keys())
         if len(remaining_stops) > 1:
@@ -369,6 +383,23 @@ class Network:
                 raise DisconnectedNetworkError(
                     f"Видалення зупинки '{stop_id}' призведе до розриву транспортної мережі"
                 )
+
+        #Видаляємо всі рейси, розклад яких (stop_times) містить видалену зупинку
+        trips_to_remove = [
+            trip_id for trip_id, trip in self.trips.items()
+            if any(st[0] == stop_id for st in trip.stop_times)
+        ]
+        for trip_id in trips_to_remove:
+            del self.trips[trip_id]
+
+
+        # Якщо маршрут повністю проходив через цю зупинку, видаляємо його 
+        routes_to_remove = [
+            route_id for route_id, route in self.routes.items()
+            if stop_id in route.stops
+        ]
+        for route_id in routes_to_remove:
+            del self.routes[route_id]
 
     def _is_connected_graph(self, node_ids: list[str]) -> bool:
         """Перевірка зв'язності графа за допомогою BFS"""
@@ -389,3 +420,36 @@ class Network:
                     queue.append(neighbor_id)
 
         return all(n in visited for n in node_ids)
+
+    def add_route(self, route: Route) -> None:
+        """
+        Додає новий маршрут до мережі.
+        
+        Винятки:
+            ValueError: Якщо маршрут із таким ID вже існує.
+            StopNotFoundError: Якщо якась із зупинок маршруту відсутня в мережі.
+        """
+        if route.route_id in self.routes:
+            raise ValueError(f"Маршрут з ID '{route.route_id}' вже існує в мережі.")
+            
+        for stop_id in route.stops:
+            if stop_id not in self.stops:
+                raise StopNotFoundError(stop_id)  # Використовує твій клас-виняток!
+                
+        self.routes[route.route_id] = route
+
+    def add_trip(self, trip: Trip) -> None:
+        """
+        Додає новий рейс до мережі.
+        
+        Винятки:
+            ValueError: Якщо рейс із таким ID вже існує.
+            ScheduleError: Якщо маршрут рейсу не зареєстрований у мережі.
+        """
+        if trip.trip_id in self.trips:
+            raise ValueError(f"Рейс з ID '{trip.trip_id}' вже існує в мережі.")
+            
+        if trip.route.route_id not in self.routes:
+            raise ScheduleError(f"Маршрут '{trip.route.route_id}' для рейсу не знайдено.")
+            
+        self.trips[trip.trip_id] = trip
