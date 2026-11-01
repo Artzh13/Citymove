@@ -1,6 +1,10 @@
 import unittest
-from src.citymove.domain import Stop, StopNotFoundError, Trip, Route, Bus, Metro
-from src.citymove.analytics import stop_info_table, departure_board_table
+import matplotlib
+matplotlib.use("Agg")  # без вікон, щоб тести працювали в консолі
+from src.citymove.domain import Stop, StopNotFoundError, Trip, Route, Bus, Metro, Network
+from src.citymove.analytics import (stop_info_table, departure_board_table, route_intervals_table, route_headways,
+                                    busiest_stops, plot_headway_histogram, plot_busiest_stops, new_axes, add_legend,
+                                    PRIMARY_COLOR, SERIES_COLORS)
 
 class TestAnalytics(unittest.TestCase):
 
@@ -78,7 +82,67 @@ class TestAnalytics(unittest.TestCase):
             self.assertEqual(metro.fare, 20.0)
             self.assertEqual(metro.name(), "Метро")
 
+    def test_route_intervals_table_success(self):
+        """Тест генерації таблиці інтервалів руху для маршруту"""
+        bus_unit = Bus()
+        sample_route = Route(route_id="r1", short_name="1", transport=bus_unit, stops=["S1"])
+        trips = [
+            Trip(trip_id="T1", route=sample_route, start_time=600, service_id="w", stop_times=[]),
+            Trip(trip_id="T2", route=sample_route, start_time=615, service_id="w", stop_times=[]),
+            Trip(trip_id="T3", route=sample_route, start_time=645, service_id="w", stop_times=[])
+        ]
+        table = route_intervals_table("r1", trips)
+        self.assertIn("ІНТЕРВАЛИ РУХУ", table)
+        self.assertIn("15", table) # Мін
+        self.assertIn("30", table) # Макс
     
+
+
+class TestCharts(unittest.TestCase):
+
+    def test_route_headways(self):
+        """Інтервали лише для вибраних service_id, нічна перерва (> max_gap) відкидається"""
+        route = Route(route_id="r1", short_name="3А", transport=Bus(), stops=["S1"])
+        trips = [Trip(f"T{start}{service}", route, start, service, [("S1", start, start)])
+                 for start, service in [(480, "wd"), (490, "wd"), (505, "wd"), (480, "we"), (900, "wd")]]
+        self.assertEqual(sorted(route_headways(trips, service_ids={"wd"})), [10, 15])
+
+    def test_busiest_stops(self):
+        """Платформи з однаковою назвою сумуються, результат відсортований за спаданням"""
+        network = Network()
+        network.stops = {"A1": Stop("A1", "Вокзал", 50.4, 30.5), "A2": Stop("A2", "Вокзал", 50.4, 30.5),
+                         "B": Stop("B", "Парк", 50.5, 30.6)}
+        network.edges = {"A1": [("B", 480, 5, "T1")], "A2": [("B", 490, 5, "T2")], "B": [("A1", 500, 5, "T3")] * 3}
+        self.assertEqual(busiest_stops(network), [("Парк", 3), ("Вокзал", 2)])
+
+    def test_busiest_stops_ignores_quotes(self):
+        """Одна зупинка, записана з лапками й без, рахується як одна"""
+        network = Network()
+        network.stops = {"L1": Stop("L1", 'ст.м. "Лісова"', 50.4, 30.6), "L2": Stop("L2", "ст.м. Лісова", 50.4, 30.6)}
+        network.edges = {"L1": [("L2", 480, 1, "T1")] * 2, "L2": [("L1", 490, 1, "T2")]}
+        self.assertEqual(busiest_stops(network), [("ст.м. Лісова", 3)])
+
+    def test_add_legend_style(self):
+        """Шаблон для команди: серії беруть кольори SERIES_COLORS по порядку, легенда без рамки"""
+        fig, ax = new_axes("Тест", "x", "y")
+        first, = ax.plot([1, 2], [1, 2], label="a")
+        second, = ax.plot([1, 2], [2, 1], label="b")
+        self.assertEqual([first.get_color(), second.get_color()], SERIES_COLORS[:2])
+        self.assertFalse(add_legend(ax).get_frame_on())
+
+    def test_charts_common_style(self):
+        """Обидва графіки в єдиному стилі: колір стовпців PRIMARY_COLOR і заголовок зліва"""
+        for fig in [plot_headway_histogram([10, 15, 20]), plot_busiest_stops([("Парк", 3)])]:
+            ax = fig.axes[0]
+            self.assertEqual(matplotlib.colors.to_hex(ax.patches[0].get_facecolor()), PRIMARY_COLOR)
+            self.assertTrue(ax.get_title(loc="left"))
+
+    def test_charts_empty_data(self):
+        """Межові дані: порожні дані для графіків викликають ValueError"""
+        with self.assertRaises(ValueError):
+            plot_headway_histogram([])
+        with self.assertRaises(ValueError):
+            plot_busiest_stops([])
 
 
 if __name__ == '__main__':
