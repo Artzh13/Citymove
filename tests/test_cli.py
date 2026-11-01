@@ -1,8 +1,23 @@
+import argparse
+import contextlib
+import io
+import os
+import tempfile
 import unittest
-from citymove.cli import create_parser
-import logging
-import time
-from citymove.infra import timed, log_call, logger
+from pathlib import Path
+
+from src.citymove.cli import create_parser, main, parse_time, format_time
+from src.citymove.infra import timed, log_call
+
+MINI_FEED = str(Path(__file__).parent / "fixtures" / "mini_gtfs")
+
+
+def run_cli(*argv: str) -> tuple[int, str, str]:
+    """запускає main() і повертає (код виходу, stdout, stderr)"""
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = main(list(argv))
+    return code, out.getvalue(), err.getvalue()
 
 class TestCityMoveCLI(unittest.TestCase):
     """модульні тести для перевірки CLI"""
@@ -17,7 +32,7 @@ class TestCityMoveCLI(unittest.TestCase):
         self.assertEqual(args.command, "route")
         self.assertEqual(args.from_stop, "Політехніка")
         self.assertEqual(args.to_stop, "Центр")
-        self.assertEqual(args.time, "09:00")
+        self.assertEqual(args.time, 540.0)
 
     def test_stats_arguments_parsing(self) -> None:
         """2. Перевірка розбору аргументів для команди stats"""
@@ -27,9 +42,80 @@ class TestCityMoveCLI(unittest.TestCase):
 
     def test_route_missing_required_argument_error(self) -> None:
         """3. Перевірка помилки, якщо не передано обов'язковий аргумент --to"""
-        with self.assertRaises(SystemExit):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             # argparse має завершити програму через відсутність обов'язкового прапорця
             self.parser.parse_args(["route", "--from", "Політехніка", "--time", "09:00"])
+
+    def test_route_time_is_parsed_to_minutes(self) -> None:
+        """--time перетворюється на хвилини, --feed і --penalty мають значення за замовчуванням"""
+        args = self.parser.parse_args(["route", "--from", "A", "--to", "B", "--time", "09:00"])
+        self.assertEqual(args.time, 540.0)
+        self.assertEqual(args.feed, "data/gtfs_static")
+        self.assertEqual(args.penalty, 5.0)
+
+
+class TestTimeHelpers(unittest.TestCase):
+
+    def test_parse_time_valid(self) -> None:
+        self.assertEqual(parse_time("07:55"), 475.0)
+        self.assertEqual(parse_time("25:10"), 1510.0)
+
+    def test_parse_time_invalid(self) -> None:
+        """межові та некоректні значення часу"""
+        for bad in ("9", "aa:bb", "09:60", "-1:00"):
+            with self.subTest(bad=bad), self.assertRaises(argparse.ArgumentTypeError):
+                parse_time(bad)
+
+    def test_format_time(self) -> None:
+        self.assertEqual(format_time(520), "08:40")
+        self.assertEqual(format_time(1510), "25:10")
+
+
+class TestCliEndToEnd(unittest.TestCase):
+    """наскрізні тести команд на мініатюрному фіді tests/fixtures/mini_gtfs"""
+
+    def test_route_with_transfer(self) -> None:
+        """Вокзал -> Парк о 07:55: автобус до Площі, пересадка на трамвай, прибуття 08:40"""
+        code, out, _ = run_cli("route", "--feed", MINI_FEED, "--from", "Вокзал", "--to", "D", "--time", "07:55")
+        self.assertEqual(code, 0)
+        self.assertIn("Автобус №1: Вокзал (08:00) -> Площа (08:20)", out)
+        self.assertIn("Трамвай №2: Площа (08:30) -> Парк (08:40)", out)
+        self.assertIn("Прибуття:        08:40", out)
+        self.assertIn("Пересадок:       1", out)
+
+    def test_route_unknown_stop_returns_error(self) -> None:
+        code, _, err = run_cli("route", "--feed", MINI_FEED, "--from", "A", "--to", "Неіснуюча", "--time", "08:00")
+        self.assertEqual(code, 1)
+        self.assertIn("Неіснуюча", err)
+
+    def test_route_unreachable_returns_error(self) -> None:
+        """після останнього рейсу шляху немає"""
+        code, _, err = run_cli("route", "--feed", MINI_FEED, "--from", "A", "--to", "D", "--time", "23:00")
+        self.assertEqual(code, 1)
+        self.assertIn("Помилка", err)
+
+    def test_route_bad_time_exits(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            main(["route", "--feed", MINI_FEED, "--from", "A", "--to", "D", "--time", "8 ранку"])
+
+    def test_stats(self) -> None:
+        code, out, _ = run_cli("stats", "--feed", MINI_FEED)
+        self.assertEqual(code, 0)
+        self.assertIn("Усього зупинок:   4", out)
+        self.assertIn("Усього рейсів:    3", out)
+        self.assertIn("Europe/Kyiv", out)
+
+    def test_stats_missing_feed(self) -> None:
+        code, _, err = run_cli("stats", "--feed", "немає_такої_папки")
+        self.assertEqual(code, 1)
+        self.assertIn("stops.txt", err)
+
+    def test_draw_creates_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = os.path.join(tmp, "map.png")
+            code, _, _ = run_cli("draw", "--feed", MINI_FEED, "--out", out_path)
+            self.assertEqual(code, 0)
+            self.assertGreater(os.path.getsize(out_path), 0)
 
 
 
