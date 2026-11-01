@@ -1,6 +1,8 @@
 import unittest
 
 from src.citymove.core import (
+    generate_radial_ring_network,
+    verify_synthetic_network,
     build_graph,
     shortest_path_from,
     find_journey,
@@ -270,6 +272,26 @@ class TestCore(unittest.TestCase):
         self.assertEqual(router.network_diameter(), 2)
         self.assertAlmostEqual(router.average_shortest_path_length(), 4 / 3)
         self.assertEqual(router.network_metrics()["diameter"], 2)
+
+class TestSyntheticBenchmark(unittest.TestCase):
+    def setUp(self):
+        self.net = generate_radial_ring_network()
+
+    def test_routing_known_values(self):
+        self.assertEqual(shortest_path_from(self.net, "C", "R3", 600.0), 610.0)
+        self.assertEqual(shortest_path_from(self.net, "C", "R3", 600.0, penalty=5.0), 610.0)
+
+    def test_metrics_known_values(self):
+        deg = degree_centrality(self.net, normalized=False)
+        self.assertEqual(deg["C"], 4.0)
+        self.assertEqual(deg["R1"], 3.0)
+        self.assertEqual(network_diameter(self.net), 2)
+        self.assertTrue(abs(average_shortest_path_length(self.net) - 1.2) < 1e-6)
+
+    def test_verify_function(self):
+        results = verify_synthetic_network()
+        for ok in results.values():
+            self.assertTrue(ok)
 
 
 if __name__ == '__main__':
