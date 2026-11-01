@@ -1,9 +1,9 @@
 """
 Автоматичний прогін усіх тестів CityMove (працює на Windows, macOS і Linux).
 
-    python scripts/run_tests.py          # усі тести з папки tests/
-    python scripts/run_tests.py -v       # з детальним виводом
-    python scripts/run_tests.py --e2e    # + наскрізний сценарій scripts/e2e_demo.py
+    python run_tests.py          # усі тести з папки tests/
+    python run_tests.py -v       # з детальним виводом
+    python run_tests.py --e2e    # + наскрізний сценарій scripts/e2e_demo.py
 
 Код завершення 0 означає «зелений стан» проєкту.
 """
@@ -15,7 +15,7 @@ import sys
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent
 
 
 def main() -> int:
@@ -28,6 +28,7 @@ def main() -> int:
     logging.disable(logging.CRITICAL)
     os.chdir(ROOT)
     sys.path.insert(0, str(ROOT))  # щоб працювали імпорти виду `from src.citymove...`
+    sys.path.insert(1, str(ROOT / "src"))  # і виду `from citymove...`
 
     suite = unittest.defaultTestLoader.discover(str(ROOT / "tests"))
     result = unittest.TextTestRunner(verbosity=2 if args.verbose else 1).run(suite)

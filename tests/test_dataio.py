@@ -3,8 +3,8 @@ import tempfile
 import unittest
 
 from src.citymove.dataio import (
-    fix_midnight, get_timezone, load_agency_timezone, load_network,
-    time_to_minutes, validate_feed,
+    DEFAULT_CACHE_FILENAME, fix_midnight, get_timezone, is_cache_valid,
+    load_agency_timezone, load_network, time_to_minutes, validate_feed,
 )
 from src.citymove.domain import (
     RouteNotFoundError, ScheduleError, StopNotFoundError, Tram,
@@ -162,7 +162,191 @@ class TestDataio(unittest.TestCase):
 
             network = load_network(folder)
             self.assertEqual(network.timezone, "Europe/Kyiv")
+            
+    def test_validate_feed_missing_files(self):
+        """Перевірка реакції валідатора на повністю порожню папку або відсутність файлів."""
+        with tempfile.TemporaryDirectory() as folder:
+            report = validate_feed(folder)
+            self.assertFalse(report.is_valid)
+            #перевіряємо, що у звіті є помилки про відсутність обов'язкових файлів
+            self.assertTrue(any("відсутній" in err for err in report.errors))
+            
+            #в strict-режимі має кидати помилку ScheduleError
+            with self.assertRaises(ScheduleError):
+                validate_feed(folder, strict=True)
 
+
+    def test_load_network_creates_cache(self):
+        """1. Перевірка створення файлу бінарного кешу при use_cache=True."""
+        with tempfile.TemporaryDirectory() as folder:
+            for name, content in FEED.items():
+                with open(os.path.join(folder, name), 'w', encoding='utf-8') as f:
+                    f.write(content)
+
+            cache_file = os.path.join(folder, DEFAULT_CACHE_FILENAME)
+            self.assertFalse(os.path.exists(cache_file))
+
+            net = load_network(folder, use_cache=True)
+            self.assertTrue(os.path.exists(cache_file))
+            self.assertEqual(len(net.stops), 2)
+            self.assertEqual(len(net.trips), 1)
+
+    def test_load_network_reads_from_cache(self):
+        """2. Перевірка коректного завантаження даних із кешу без вихідних CSV."""
+        with tempfile.TemporaryDirectory() as folder:
+            for name, content in FEED.items():
+                with open(os.path.join(folder, name), 'w', encoding='utf-8') as f:
+                    f.write(content)
+
+            net_original = load_network(folder, use_cache=True)
+
+            # Видаляємо вихідні CSV-файли з папки
+            for name in FEED:
+                os.remove(os.path.join(folder, name))
+
+            # Завантажуємо знову — мережа має успішно відновитися з бінарного кешу
+            net_cached = load_network(folder, use_cache=True)
+
+            self.assertEqual(set(net_cached.stops.keys()), set(net_original.stops.keys()))
+            self.assertEqual(set(net_cached.routes.keys()), set(net_original.routes.keys()))
+            self.assertEqual(set(net_cached.trips.keys()), set(net_original.trips.keys()))
+            self.assertEqual(net_cached.edges, net_original.edges)
+            self.assertEqual(net_cached.timezone, net_original.timezone)
+
+    def test_cache_invalidation_when_source_files_updated(self):
+        """3. Інвалідація кешу: при оновленні текстових файлів кеш автоматично оновлюється."""
+        with tempfile.TemporaryDirectory() as folder:
+            for name, content in FEED.items():
+                with open(os.path.join(folder, name), 'w', encoding='utf-8') as f:
+                    f.write(content)
+
+            net1 = load_network(folder, use_cache=True)
+            self.assertEqual(len(net1.stops), 2)
+
+            cache_file = os.path.join(folder, DEFAULT_CACHE_FILENAME)
+            cache_mtime = os.path.getmtime(cache_file)
+
+            # Оновлюємо stops.txt (додаємо зупинку C) і встановлюємо новіший mtime
+            stops_file = os.path.join(folder, 'stops.txt')
+            with open(stops_file, 'a', encoding='utf-8') as f:
+                f.write("C,Зупинка В,50.42,30.52\n")
+
+            new_time = cache_mtime + 5
+            os.utime(stops_file, (new_time, new_time))
+
+            self.assertFalse(is_cache_valid(folder, cache_file))
+
+            # Перезавантажуємо — має спрацювати інвалідація та додатися зупинка C
+            net2 = load_network(folder, use_cache=True)
+            self.assertEqual(len(net2.stops), 3)
+            self.assertIn("C", net2.stops)
+
+    def test_corrupted_cache_fallback(self):
+        """4. Стійкість: якщо файл кешу пошкоджено, відбувається відновлення з вихідних CSV."""
+        with tempfile.TemporaryDirectory() as folder:
+            for name, content in FEED.items():
+                with open(os.path.join(folder, name), 'w', encoding='utf-8') as f:
+                    f.write(content)
+
+            cache_file = os.path.join(folder, DEFAULT_CACHE_FILENAME)
+            # Записуємо сміття у файл кешу
+            with open(cache_file, 'wb') as f:
+                f.write(b"CORRUPTED_CACHE_CONTENT_NOT_A_VALID_PICKLE")
+
+            # Встановлюємо mtime для кешу новішим, ніж у текстових файлів
+            now = os.path.getmtime(os.path.join(folder, 'stops.txt')) + 10
+            os.utime(cache_file, (now, now))
+
+            # Функція має безпечно проігнорувати битий кеш і завантажити з CSV
+            net = load_network(folder, use_cache=True)
+            self.assertEqual(len(net.stops), 2)
+            self.assertIn("A", net.stops)
+
+    def test_load_network_creates_cache(self):
+        """1. Перевірка створення файлу бінарного кешу при use_cache=True."""
+        with tempfile.TemporaryDirectory() as folder:
+            for name, content in FEED.items():
+                with open(os.path.join(folder, name), 'w', encoding='utf-8') as f:
+                    f.write(content)
+
+            cache_file = os.path.join(folder, DEFAULT_CACHE_FILENAME)
+            self.assertFalse(os.path.exists(cache_file))
+
+            net = load_network(folder, use_cache=True)
+            self.assertTrue(os.path.exists(cache_file))
+            self.assertEqual(len(net.stops), 2)
+            self.assertEqual(len(net.trips), 1)
+
+    def test_load_network_reads_from_cache(self):
+        """2. Перевірка коректного завантаження даних із кешу без вихідних CSV."""
+        with tempfile.TemporaryDirectory() as folder:
+            for name, content in FEED.items():
+                with open(os.path.join(folder, name), 'w', encoding='utf-8') as f:
+                    f.write(content)
+
+            net_original = load_network(folder, use_cache=True)
+
+            # Видаляємо вихідні CSV-файли з папки
+            for name in FEED:
+                os.remove(os.path.join(folder, name))
+
+            # Завантажуємо знову — мережа має успішно відновитися з бінарного кешу
+            net_cached = load_network(folder, use_cache=True)
+
+            self.assertEqual(set(net_cached.stops.keys()), set(net_original.stops.keys()))
+            self.assertEqual(set(net_cached.routes.keys()), set(net_original.routes.keys()))
+            self.assertEqual(set(net_cached.trips.keys()), set(net_original.trips.keys()))
+            self.assertEqual(net_cached.edges, net_original.edges)
+            self.assertEqual(net_cached.timezone, net_original.timezone)
+
+    def test_cache_invalidation_when_source_files_updated(self):
+        """3. Інвалідація кешу: при оновленні текстових файлів кеш автоматично оновлюється."""
+        with tempfile.TemporaryDirectory() as folder:
+            for name, content in FEED.items():
+                with open(os.path.join(folder, name), 'w', encoding='utf-8') as f:
+                    f.write(content)
+
+            net1 = load_network(folder, use_cache=True)
+            self.assertEqual(len(net1.stops), 2)
+
+            cache_file = os.path.join(folder, DEFAULT_CACHE_FILENAME)
+            cache_mtime = os.path.getmtime(cache_file)
+
+            # Оновлюємо stops.txt (додаємо зупинку C) і встановлюємо новіший mtime
+            stops_file = os.path.join(folder, 'stops.txt')
+            with open(stops_file, 'a', encoding='utf-8') as f:
+                f.write("C,Зупинка В,50.42,30.52\n")
+
+            new_time = cache_mtime + 5
+            os.utime(stops_file, (new_time, new_time))
+
+            self.assertFalse(is_cache_valid(folder, cache_file))
+
+            # Перезавантажуємо — має спрацювати інвалідація та додатися зупинка C
+            net2 = load_network(folder, use_cache=True)
+            self.assertEqual(len(net2.stops), 3)
+            self.assertIn("C", net2.stops)
+
+    def test_corrupted_cache_fallback(self):
+        """4. Стійкість: якщо файл кешу пошкоджено, відбувається відновлення з вихідних CSV."""
+        with tempfile.TemporaryDirectory() as folder:
+            for name, content in FEED.items():
+                with open(os.path.join(folder, name), 'w', encoding='utf-8') as f:
+                    f.write(content)
+
+            cache_file = os.path.join(folder, DEFAULT_CACHE_FILENAME)
+            # Записуємо сміття у файл кешу
+            with open(cache_file, 'wb') as f:
+                f.write(b"CORRUPTED_CACHE_CONTENT_NOT_A_VALID_PICKLE")
+
+            # Встановлюємо mtime для кешу новішим, ніж у текстових файлів
+            now = os.path.getmtime(os.path.join(folder, 'stops.txt')) + 10
+            os.utime(cache_file, (now, now))
+
+            # Функція має безпечно проігнорувати битий кеш і завантажити з CSV
+            net = load_network(folder, use_cache=True)
+            self.assertEqual(len(net.stops), 2)
+            self.assertIn("A", net.stops)
 
 if __name__ == '__main__':
     unittest.main()
