@@ -31,6 +31,18 @@ class TestCityMoveCLI(unittest.TestCase):
             # argparse має завершити програму через відсутність обов'язкового прапорця
             self.parser.parse_args(["route", "--from", "Політехніка", "--time", "09:00"])
 
+    def test_draw_arguments_parsing(self) -> None:
+        """4. Перевірка розбору аргументів для команди draw"""
+        args = self.parser.parse_args(["draw", "--out", "map.png"])
+        self.assertEqual(args.command, "draw")
+        self.assertEqual(args.out, "map.png")
+
+    def test_route_invalid_time_format(self) -> None:
+        """5. Перевірка відпрацювання помилки формату часу (не перериває виконання в CLI, але генерує повідомлення)"""
+        args = self.parser.parse_args(["route", "--from", "A", "--to", "B", "--time", "invalid_time"])
+        self.assertEqual(args.time, "invalid_time")
+        # Помилка обробляється всередині handle_route
+
 
 
 
@@ -71,6 +83,27 @@ class TestInfraDecorators(unittest.TestCase):
 
         with self.assertRaises(ZeroDivisionError):
             bad_func()
+
+    def test_memoize_decorator(self):
+        """Перевіряємо, чи `@memoize` дійсно кешує результат і не викликає функцію вдруге."""
+        call_count = 0
+
+        @memoize
+        def expensive_computation(x):
+            nonlocal call_count
+            call_count += 1
+            return x * x
+
+        # Перший виклик (функція має виконатися)
+        res1 = expensive_computation(4)
+        self.assertEqual(res1, 16)
+        self.assertEqual(call_count, 1)
+
+        # Другий виклик з тими ж аргументами (має повернути з кешу)
+        res2 = expensive_computation(4)
+        self.assertEqual(res2, 16)
+        self.assertEqual(call_count, 1)
+            
 
 
 if __name__ == "__main__":
