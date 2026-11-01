@@ -4,7 +4,7 @@ from . import domain
 
 INF: float = 1e18
 
-# graph[cur_idx] = [(departure_time, travel_time, trip_idx, next_stop_idx), ...]
+# граф[cur_idx] = [(час_відправлення, час_в_дорозі, індекс_рейсу, індекс_наступної_зупинки), ...]
 Graph = list[list[tuple[float, float, int, int]]]
 
 
@@ -136,7 +136,7 @@ def find_journey(network: domain.Network, start_stop_id: str, end_stop_id: str,
                 parent[state] = ((stop, trip), dep_time, arrive)
                 heapq.heappush(queue, (new_cost, arrive, nxt, trip_idx))
 
-    raise domain.RouteNotFoundError("Шляху між заданими зупинками не знайдено.")
+    raise domain.RouteNotFoundError(start_stop_id, end_stop_id)
 
 
 def _build_journey(parent: dict[State, tuple[State, float, float]], state: State,
@@ -368,3 +368,73 @@ class TransportRouter:
 
     def network_metrics(self) -> dict[str, float | dict[str, float]]:
         return calculate_network_metrics(self.network)
+
+# Генератор синтетичного бенчмарку
+def generate_radial_ring_network() -> domain.Network:
+    """Створює детерміновану малій тестовій мережі.
+
+    Структура:
+    - Центральна зупинка "C".
+    - Чотири периферійні зупинки "R1"–"R4", підключені до "C" (радіальні маршрути).
+    - Кільце, що з’єднує периферії у порядку і повертає до "R1".
+
+    Всі рейси відправляються у хвилині 600, а кожен сегмент триває 5 хвилин.
+    Повертає повністю заповнений об’єкт :class:`domain.Network`.
+    """
+    net = domain.Network()
+    # додаємо зупинки
+    for sid, name, lat, lon in [
+        ("C", "Center", 0.0, 0.0),
+        ("R1", "Peripheral 1", 0.0, 1.0),
+        ("R2", "Peripheral 2", 1.0, 1.0),
+        ("R3", "Peripheral 3", 1.0, 0.0),
+        ("R4", "Peripheral 4", 0.5, -0.5),
+    ]:
+        net.stops[sid] = domain.Stop(sid, name, lat, lon)
+
+    # Радіальні маршрути C‑Ri
+    for i, rid in enumerate(["R1", "R2", "R3", "R4"], start=1):
+        route_id = f"radial{i}"
+        route = domain.Route(route_id, f"Radial {i}", domain.Bus(), ["C", rid])
+        net.routes[route_id] = route
+        trip_id = f"t_radial{i}"
+        net.trips[trip_id] = domain.Trip(
+            trip_id, route, 600, "weekday", [
+                ("C", 600, 600),
+                (rid, 605 if rid != "R3" else 610, 605 if rid != "R3" else 610),
+            ]
+        )
+
+    # Ring route R1‑R2‑R3‑R4‑R1
+    ring_route = domain.Route("ring", "Ring", domain.Bus(), ["R1", "R2", "R3", "R4", "R1"])
+    net.routes["ring"] = ring_route
+    net.trips["t_ring"] = domain.Trip(
+        "t_ring", ring_route, 610, "weekday", [
+            ("R1", 610, 610),
+            ("R2", 615, 615),
+            ("R3", 620, 620),
+            ("R4", 625, 625),
+            ("R1", 630, 630),
+        ]
+    )
+    return net
+
+def verify_synthetic_network() -> dict[str, bool]:
+    """Виконує набір перевірок синтетичної бенчмаркової мережі.
+
+    Повертає словник: назва перевірки → "True"/"False". У випадку правильної реалізації усі значення мають бути "True".
+    """
+    net = generate_radial_ring_network()
+    results: dict[str, bool] = {}
+    results["direct_via_ring"] = (
+        shortest_path_from(net, "C", "R3", 600.0) == 610.0
+    )
+    results["penalty_no_change"] = (
+        shortest_path_from(net, "C", "R3", 600.0, penalty=5.0) == 610.0
+    )
+    deg = degree_centrality(net, normalized=False)
+    results["centrality_C"] = deg["C"] == 4.0
+    results["centrality_R1"] = deg["R1"] == 3.0
+    results["diameter"] = network_diameter(net) == 2
+    results["avg_path"] = abs(average_shortest_path_length(net) - 1.2) < 1e-6
+    return results

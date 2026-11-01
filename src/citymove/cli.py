@@ -1,13 +1,16 @@
 import argparse
 import sys
+from pathlib import Path
 
 from .core import TransportRouter, find_journey
 from .dataio import load_network, validate_feed
 from .domain import Network, NetworkError, StopNotFoundError
-from .infra import logger, timed, log_call
+from .infra import logger, timed, log_call, load_config
 
-DEFAULT_FEED = "data/gtfs_static"
-DEFAULT_PENALTY = 5.0
+# параметри за замовчуванням беремо з config.json у корені репозиторію (не залежить від поточної папки)
+CONFIG = load_config(Path(__file__).resolve().parents[2] / "config.json")
+DEFAULT_FEED = CONFIG.get("default_feed_path", "data/gtfs_static")
+DEFAULT_PENALTY = float(CONFIG.get("transfer_penalty_min", 5))
 
 
 def parse_time(value: str) -> float:

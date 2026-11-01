@@ -12,10 +12,15 @@ class StopNotFoundError(NetworkError):
 
 class RouteNotFoundError(NetworkError):
     """Виняток, що викидається, якщо маршрут не знайдено в мережі."""
-    def __init__(self, from_stop: str, to_stop: str):
-        super().__init__(f"Не вділося знайти маршрут від {from_stop} до {to_stop} !")
-        self.from_stop = from_stop
-        self.to_stop = to_stop
+    def __init__(self, from_stop_or_msg: str, to_stop: str = ""):
+        if to_stop:
+            super().__init__(f"Не вдалося знайти маршрут від {from_stop_or_msg} до {to_stop}!")
+            self.from_stop = from_stop_or_msg
+            self.to_stop = to_stop
+        else:
+            super().__init__(from_stop_or_msg)
+            self.from_stop = ""
+            self.to_stop = ""
 
 class DisconnectedNetworkError(NetworkError):
     """Виняток, що викидається, якщо видалення вузла призведе до розриву мережі."""
