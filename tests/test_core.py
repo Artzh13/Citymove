@@ -3,6 +3,8 @@ import unittest
 from src.citymove.core import (
     generate_radial_ring_network,
     verify_synthetic_network,
+    generate_transfer_benchmark_network,
+    format_benchmark_report,
     build_graph,
     shortest_path_from,
     find_journey,
@@ -292,6 +294,44 @@ class TestSyntheticBenchmark(unittest.TestCase):
         results = verify_synthetic_network()
         for ok in results.values():
             self.assertTrue(ok)
+
+
+
+
+class TestWeek4TransferBenchmark(unittest.TestCase):
+    def setUp(self):
+        self.net = generate_transfer_benchmark_network()
+
+    def test_transfer_penalty_switching_decision(self):
+        """Без штрафу обирається експрес з пересадкою, зі штрафом 15 — прямий рейс."""
+        j_cheap = find_journey(self.net, "A", "D", 600.0, penalty=0.0)
+        self.assertEqual(j_cheap.arrival, 618.0)
+        self.assertEqual(j_cheap.cost, 618.0)
+        self.assertEqual(j_cheap.transfers, 1)
+        self.assertEqual([leg[0] for leg in j_cheap.legs], ["t_exp1", "t_exp2"])
+
+        j_penalized = find_journey(self.net, "A", "D", 600.0, penalty=15.0)
+        self.assertEqual(j_penalized.arrival, 630.0)
+        self.assertEqual(j_penalized.cost, 630.0)
+        self.assertEqual(j_penalized.transfers, 0)
+        self.assertEqual([leg[0] for leg in j_penalized.legs], ["t_direct"])
+
+    def test_missed_connection_after_departure(self):
+        """якщо пасажир шукає рейс після відправлення (615 хв), шлях не знаходиться"""
+        with self.assertRaises(RouteNotFoundError):
+            find_journey(self.net, "A", "D", 615.0)
+
+    def test_unreachable_isolated_stop(self):
+        """якщо зупинка ISO відсутня в рейсах то викидати RouteNotFoundError"""
+        with self.assertRaises(RouteNotFoundError):
+            find_journey(self.net, "A", "ISO", 600.0)
+
+    def test_format_benchmark_report_content(self):
+        """Перевірка формування консольного звіту для Демонстрації 1"""
+        report = format_benchmark_report()
+        self.assertIsInstance(report, str)
+        self.assertIn("РЕЗУЛЬТАТИ ВЕРИФІКАЦІЇ", report)
+        self.assertIn("[OK]", report)
 
 
 if __name__ == '__main__':
