@@ -1,4 +1,5 @@
 import csv
+import pickle
 from pathlib import Path
 from typing import Iterator
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -498,16 +499,85 @@ def validate_feed(folder: str | Path, strict: bool = False) -> FeedValidationRep
     return report
 
 
-def load_network(folder: str | Path, transfer_time: int = 5, strict_validation: bool = False) -> Network:
+DEFAULT_CACHE_FILENAME = ".network_cache.pkl"
+
+
+def is_cache_valid(folder: str | Path, cache_file: str | Path) -> bool:
+    """
+    Перевіряє, чи файл кешу існує та чи він свіжіший за всі вихідні GTFS-файли (*.txt).
+
+    :param folder: шлях до папки з файлами GTFS
+    :param cache_file: шлях до файлу кешу
+    :return: True, якщо кеш існує і жоден .txt файл не змінювався після нього
+    """
+    cache_path = Path(cache_file)
+    folder_path = Path(folder)
+    if not cache_path.exists():
+        return False
+
+    try:
+        cache_mtime = cache_path.stat().st_mtime
+        for txt_file in folder_path.glob("*.txt"):
+            if txt_file.stat().st_mtime > cache_mtime:
+                return False
+        return True
+    except OSError:
+        return False
+
+
+def save_network_cache(network: Network, cache_file: str | Path) -> None:
+    """
+    Зберігає об'єкт Network у бінарний кеш за допомогою pickle.
+
+    :param network: побудована мережа
+    :param cache_file: цільовий шлях до файлу кешу
+    """
+    cache_path = Path(cache_file)
+    with open(cache_path, 'wb') as f:
+        pickle.dump(network, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def load_network_cache(cache_file: str | Path) -> Network:
+    """
+    Завантажує об'єкт Network із бінарного файлу кешу.
+
+    :param cache_file: шлях до файлу кешу
+    :return: відновлений об'єкт Network
+    :raises OSError, pickle.PickleError: якщо файл пошкоджено або неможливо прочитати
+    """
+    cache_path = Path(cache_file)
+    with open(cache_path, 'rb') as f:
+        return pickle.load(f)
+
+
+def load_network(
+    folder: str | Path,
+    transfer_time: int = 5,
+    strict_validation: bool = False,
+    use_cache: bool = False,
+    cache_filename: str = DEFAULT_CACHE_FILENAME,
+) -> Network:
     """
     Завантажує GTFS-фід із папки, визначає часову зону та будує мережу.
+    Підтримує бінарне кешування для прискореного завантаження.
+
     :param folder: шлях до папки з файлами GTFS (напр. data/gtfs_static)
     :param transfer_time: час на пересадку у хвилинах
     :param strict_validation: якщо True, валідатор викидає винятки при критичних помилках
+    :param use_cache: якщо True, використовує збережений бінарний кеш за його наявності та свіжості
+    :param cache_filename: ім'я файлу бінарного кешу
     :return: готовий Network із полем timezone та прикріпленим звітом validation_report
     """
     folder = Path(folder)
-    
+    cache_path = folder / cache_filename
+
+    if use_cache and is_cache_valid(folder, cache_path):
+        try:
+            return load_network_cache(cache_path)
+        except Exception:
+            # Якщо файл кешу пошкоджено, відкатуємося до стандартного завантаження
+            pass
+
     report = validate_feed(folder, strict=strict_validation)
 
     stops = load_stops(folder / 'stops.txt')
@@ -525,4 +595,11 @@ def load_network(folder: str | Path, transfer_time: int = 5, strict_validation: 
         network.timezone = 'UTC'
 
     network.validation_report = report
+
+    if use_cache:
+        try:
+            save_network_cache(network, cache_path)
+        except Exception:
+            pass
+
     return network
