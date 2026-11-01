@@ -10,12 +10,12 @@ def stop_info_table(stop: Stop, routes: list[str] = None) -> str:
     routes_str = ", ".join(routes_list) if routes_list else "(Маршрутів немає)"
     lines = [
         border,
-        f"{"ІНФОРМАЦІЯ ПРО ЗУПИНКУ":^70}",
+        f"{'ІНФОРМАЦІЯ ПРО ЗУПИНКУ':^70}",
         border,
-        f"| {"Назва:":<20}{stop.name:<50} |",
-        f"| {"ID:":<20}{stop.stop_id:<50} |",
-        f"| {"Координати:":<20}{stop.lat:.4f}, {stop.lon:.4f}{" " * 34} |",
-        f"| {"Маршрути:":<20}{routes_str:<50} |",
+        f"| {'Назва:':<20}{stop.name:<50} |",
+        f"| {'ID:':<20}{stop.stop_id:<50} |",
+        f"| {'Координати:':<20}{stop.lat:.4f}, {stop.lon:.4f}{' ' * 34} |",
+        f"| {'Маршрути:':<20}{routes_str:<50} |",
         border
     ]
     return "\n".join(lines)
@@ -44,7 +44,7 @@ def departure_board_table(stop_name: str, trips: list) -> str:
     )
 
     if not stop_exists:
-        raise StopNotFoundError(f"Exception: stop {stop_name} is not found!")
+        raise StopNotFoundError(stop_name)
 
     # які маршрути проходять чнрез передану зупинку
     filtered_trips = [
@@ -82,9 +82,13 @@ def departure_board_table(stop_name: str, trips: list) -> str:
     lines.append(border)
     return "\n".join(lines)
 #===========================================================================================================================
-def print_depatrures_board(stop_name: str, trips: list) -> None:
+def print_departures_board(stop_name: str, trips: list) -> None:
     """Одразу виводить текстове табло відправлень для конкретної зупинки в консоль"""
-    print(departure_board_table(stop_name,trips))
+    print(departure_board_table(stop_name, trips))
+
+# Зворотна сумісність для старої назви з помилкою з тижня 1
+print_depatrures_board = print_departures_board
+
 #===========================================================================================================================
 
 
@@ -223,16 +227,66 @@ def print_route_intervals(route_id: str, trips: list[Trip]) -> None:
     print(route_intervals_table(route_id, trips))
 
 #===========================================================================================================================
-def generate_console_report(network: Network) -> None:
-    """Оформлення консольного підсумкового звіту за завантаженим фідом для Демонстрації 1."""
+def console_report_table(network: Network) -> str:
+    """Генерує текстовий підсумковий звіт по транспортній мережі."""
     border = "=" * 50
-    print(border)
-    print(f"{'ПІДСУМКОВИЙ ЗВІТ ПО ТРАНСПОРТНІЙ МЕРЕЖІ':^50}")
-    print(border)
-    print(f"Кількість зупинок:  {len(network.stops)}")
-    print(f"Кількість маршрутів: {len(network.routes)}")
-    print(f"Кількість рейсів:   {len(network.trips)}")
+    transport_types = sorted(set(r.transport.name() for r in network.routes.values()))
+    types_str = ", ".join(transport_types) if transport_types else "(Немає даних)"
+    lines = [
+        border,
+        f"{'ПІДСУМКОВИЙ ЗВІТ ПО ТРАНСПОРТНІЙ МЕРЕЖІ':^50}",
+        border,
+        f"Кількість зупинок:  {len(network.stops)}",
+        f"Кількість маршрутів: {len(network.routes)}",
+        f"Кількість рейсів:   {len(network.trips)}",
+        f"Види транспорту:    {types_str}",
+        border,
+    ]
+    return "\n".join(lines)
+
+
+def generate_console_report(network: Network) -> str:
+    """Оформлення консольного підсумкового звіту за завантаженим фідом для Демонстрації 1."""
+    report = console_report_table(network)
+    print(report)
+    return report
+
+#===========================================================================================================================
+def route_summary_table(route: Route, trips: list[Trip]) -> str:
+    """Генерує текстову аналітичну картку для окремого маршруту."""
+    route_trips = [t for t in trips if t.route.route_id == route.route_id]
+    route_trips.sort(key=lambda t: t.start_time)
     
-    transport_types = set(r.transport.name() for r in network.routes.values())
-    print(f"Види транспорту:    {', '.join(transport_types)}")
-    print(border)
+    border = "=" * 65
+    width = 65
+    header = f" КАРТКА МАРШРУТУ {route.short_name} [{route.transport.name()}] "
+    
+    lines = [
+        border,
+        f"{header:^{width}}",
+        border,
+        f"| {'ID маршруту:':<25} {route.route_id:<35} |",
+        f"| {'Тип транспорту:':<25} {route.transport.name():<35} |",
+        f"| {'Кількість зупинок:':<25} {len(route.stops):<35} |",
+        f"| {'Кількість рейсів:':<25} {len(route_trips):<35} |",
+    ]
+    
+    if route_trips:
+        first_dep = f"{route_trips[0].start_time // 60:02d}:{route_trips[0].start_time % 60:02d}"
+        last_dep = f"{route_trips[-1].start_time // 60:02d}:{route_trips[-1].start_time % 60:02d}"
+        intervals = [b.start_time - a.start_time for a, b in zip(route_trips, route_trips[1:])]
+        avg_int = f"{sum(intervals) / len(intervals):.1f} хв" if intervals else "—"
+        lines.append(f"| {'Перший рейс:':<25} {first_dep:<35} |")
+        lines.append(f"| {'Останній рейс:':<25} {last_dep:<35} |")
+        lines.append(f"| {'Середній інтервал:':<25} {avg_int:<35} |")
+    else:
+        lines.append(f"| {'Рейси:':<25} {'(немає даних про рейси)':<35} |")
+        
+    lines.append(border)
+    return "\n".join(lines)
+
+
+def print_route_summary(route: Route, trips: list[Trip]) -> None:
+    """Одразу виводить аналітичну картку маршруту в консоль."""
+    print(route_summary_table(route, trips))
+
