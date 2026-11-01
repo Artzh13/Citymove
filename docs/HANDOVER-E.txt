@@ -44,7 +44,7 @@ python -m unittest tests.test_cli
     * Створити каркас пакета та винести параметри (штраф за пересадку, швидкість ходьби тощо) у конфігураційний файл
     * Написати декоратор `@memoize` для кешування знайдених алгоритмом шляхів
 
-— Як запустити тести: PYTHONPATH=src python -m unittest tests/test_cli.py `
+— Як запустити тести: PYTHONPATH=src python -m unittest tests/test_cli.py
 
 — Що варто знати новому власникові:
     * Для перевірки роботи декораторів та логування використовуй тестовий запуск із неіснуючою пакою: PYTHONPATH=src python -m citymove.cli stats --feed fake_folder
