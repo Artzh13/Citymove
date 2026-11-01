@@ -438,3 +438,75 @@ def verify_synthetic_network() -> dict[str, bool]:
     results["diameter"] = network_diameter(net) == 2
     results["avg_path"] = abs(average_shortest_path_length(net) - 1.2) < 1e-6
     return results
+
+def generate_transfer_benchmark_network() -> domain.Network:
+    """Створює синтетичну мережу для тестування чутливості Дейкстри до штрафу за пересадку.
+
+    Містить:
+    - Прямий повільний рейс A -> B -> C -> D (тривалість 30 хв).
+    - Два швидкі експрес-рейси A -> B (8 хв) та B -> D (8 хв) з можливістю пересадки у вузлі B.
+    - Ізольовану зупинку "ISO" для тестування недосяжності.
+    """
+    net = domain.Network(transfer_time=2)
+    for sid, name in [("A", "Старт"), ("B", "Пересадка"), ("C", "Проміжна"), ("D", "Фініш"), ("ISO", "Ізольована")]:
+        net.stops[sid] = domain.Stop(sid, name, 0.0, 0.0)
+
+    # 1. Прямий маршрут A -> B -> C -> D
+    r_direct = domain.Route("r_direct", "Direct Bus", domain.Bus(), ["A", "B", "C", "D"])
+    net.routes["r_direct"] = r_direct
+    net.trips["t_direct"] = domain.Trip(
+        "t_direct", r_direct, 600, "daily",
+        [("A", 600, 600), ("B", 610, 610), ("C", 620, 620), ("D", 630, 630)],
+    )
+
+    # 2. Експрес 1: A -> B
+    r_exp1 = domain.Route("r_exp1", "Express 1", domain.Bus(), ["A", "B"])
+    net.routes["r_exp1"] = r_exp1
+    net.trips["t_exp1"] = domain.Trip(
+        "t_exp1", r_exp1, 600, "daily",
+        [("A", 600, 600), ("B", 608, 608)],
+    )
+
+    # 3. Експрес 2: B -> D
+    r_exp2 = domain.Route("r_exp2", "Express 2", domain.Bus(), ["B", "D"])
+    net.routes["r_exp2"] = r_exp2
+    net.trips["t_exp2"] = domain.Trip(
+        "t_exp2", r_exp2, 610, "daily",
+        [("B", 610, 610), ("D", 618, 618)],
+    )
+
+    return net
+
+
+def format_benchmark_report(network: domain.Network | None = None) -> str:
+    """Генерує текстовий підсумковий звіт верифікації ядра Дейкстри для Демонстрації 1."""
+    net = network or generate_radial_ring_network()
+    bench_results = verify_synthetic_network()
+    t_net = generate_transfer_benchmark_network()
+
+    j_cheap = find_journey(t_net, "A", "D", 600.0, penalty=0.0)
+    j_penalized = find_journey(t_net, "A", "D", 600.0, penalty=15.0)
+
+    lines = [
+        "=" * 60,
+        "   МІСТОРУХ — РЕЗУЛЬТАТИ ВЕРИФІКАЦІЇ ЯДРА (ДЕМО 1)",
+        "=" * 60,
+        "1. Базова синтетична мережа (Radial-Ring):",
+    ]
+    for check_name, status in bench_results.items():
+        mark = "[OK]" if status else "[FAIL]"
+        lines.append(f"   - {check_name:<22}: {mark}")
+
+    lines.extend([
+        "-" * 60,
+        "2. Тест чутливості до штрафу за пересадку (A -> D):",
+        f"   - Без штрафу (penalty=0.0) : час={j_cheap.arrival:.1f} хв, вартість={j_cheap.cost:.1f}, пересадок={j_cheap.transfers}",
+        f"   - Зі штрафом (penalty=15.0): час={j_penalized.arrival:.1f} хв, вартість={j_penalized.cost:.1f}, пересадок={j_penalized.transfers}",
+        f"   - Перемикання маршруту      : {'[OK] успішно' if j_cheap.transfers == 1 and j_penalized.transfers == 0 else '[FAIL]'}",
+        "=" * 60,
+    ])
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    print(format_benchmark_report())
