@@ -93,7 +93,8 @@ def print_depatrures_board(stop_name: str, trips: list) -> None:
 
 #===========================================================================================================================
 # ЄДИНИЙ СТИЛЬ ГРАФІКІВ CityMove — шаблон для команди.
-# Новий графік будуємо через new_axes(...), колір однієї серії — PRIMARY_COLOR, кількох — SERIES_COLORS по порядку.
+# Новий графік будуємо через new_axes(...), колір однієї серії — PRIMARY_COLOR, кількох — SERIES_COLORS по порядку,
+# легенду додаємо через add_legend(ax).
 SERIES_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
 PRIMARY_COLOR, BACKGROUND, TEXT_COLOR, GRID_COLOR = SERIES_COLORS[0], "#fcfcfb", "#52514e", "#e4e3df"
 
@@ -111,6 +112,10 @@ def new_axes(title: str, xlabel: str = "", ylabel: str = ""):
         fig, ax = plt.subplots()
         ax.set(title=title, xlabel=xlabel, ylabel=ylabel)
     return fig, ax
+#===========================================================================================================================
+def add_legend(ax, **kwargs):
+    """Додає легенду в стилі CityMove (стиль з new_axes діє лише під час створення осей, тому легенду оформлюємо тут)"""
+    return ax.legend(**{"frameon": False, "labelcolor": TEXT_COLOR, **kwargs})
 #===========================================================================================================================
 
 
@@ -149,11 +154,15 @@ def plot_headway_histogram(headways: list[int], bin_size: int = 5) -> Figure:
 
 
 #===========================================================================================================================
-def busiest_stops(network, top: int = 10) -> list[tuple[str, int]]:
-    """Top-N зупинок за кількістю з'єднань (ребер network.edges); платформи з однаковою назвою сумуються"""
+def busiest_stops(network: Network, top: int = 10) -> list[tuple[str, int]]:
+    """
+    Top-N зупинок за кількістю з'єднань (ребер network.edges); платформи з однаковою назвою сумуються.
+    Лапки в назвах ігноруються, бо у фіді одна зупинка буває записана як «ст.м. Лісова» і «ст.м. "Лісова"».
+    """
     counts: dict[str, int] = {}
     for stop_id, edges in network.edges.items():
         name = network.stops[stop_id].name if stop_id in network.stops else stop_id
+        name = " ".join(name.translate(str.maketrans("", "", '"«»')).split())
         counts[name] = counts.get(name, 0) + len(edges)
     return sorted(counts.items(), key=lambda item: item[1], reverse=True)[:top]
 #===========================================================================================================================
@@ -174,7 +183,7 @@ def plot_busiest_stops(stops: list[tuple[str, int]]) -> Figure:
 
 #===========================================================================================================================
 def calculate_route_intervals(trips: list[Trip], route_id: str) -> list[int]:
-    """Допоміжна функція для розрахунку інтервалів (у хвилинах) між рейсами одного маршруту[cite: 2]."""
+    """Допоміжна функція для розрахунку інтервалів (у хвилинах) між рейсами одного маршруту."""
     route_trips = [t for t in trips if t.route.route_id == route_id]
     route_trips.sort(key=lambda t: t.start_time)
 
@@ -185,7 +194,7 @@ def calculate_route_intervals(trips: list[Trip], route_id: str) -> list[int]:
 
 #===========================================================================================================================
 def route_intervals_table(route_id: str, trips: list[Trip]) -> str:
-    """Генерує текстову таблицю інтервалів руху для заданого маршруту[cite: 2]."""
+    """Генерує текстову таблицю інтервалів руху для заданого маршруту."""
     intervals = calculate_route_intervals(trips, route_id)
     
     route_name = next((t.route.short_name for t in trips if t.route.route_id == route_id), route_id)
@@ -210,74 +219,12 @@ def route_intervals_table(route_id: str, trips: list[Trip]) -> str:
 
 #===========================================================================================================================
 def print_route_intervals(route_id: str, trips: list[Trip]) -> None:
-    """Одразу виводить текстову таблицю інтервалів у консоль[cite: 2]."""
+    """Одразу виводить текстову таблицю інтервалів у консоль."""
     print(route_intervals_table(route_id, trips))
 
 #===========================================================================================================================
-def setup_plot_style() -> None:
-    """Встановлює єдиний стиль оформлення графіків як шаблон для команди."""
-    plt.style.use('seaborn-v0_8-darkgrid')
-    plt.rcParams['figure.figsize'] = (10, 6)
-    plt.rcParams['axes.titlesize'] = 14
-    plt.rcParams['axes.labelsize'] = 12
-
-#===========================================================================================================================
-def plot_interval_histogram(trips: list[Trip]) -> None:
-    """Будує гістограму розподілу інтервалів руху по всіх маршрутах мережі."""
-    setup_plot_style()
-    all_intervals = []
-
-    route_ids = {t.route.route_id for t in trips}
-    for r_id in route_ids:
-        all_intervals.extend(calculate_route_intervals(trips, r_id))
-
-    if not all_intervals:
-        print("Немає даних для побудови гістограми.")
-        return
-
-    plt.figure()
-    plt.hist(all_intervals, bins=20, color='skyblue', edgecolor='black')
-    plt.title('Розподіл інтервалів руху громадського транспорту')
-    plt.xlabel('Інтервал (хвилини)')
-    plt.ylabel('Кількість випадків')
-    plt.tight_layout()
-    plt.show()
-
-#===========================================================================================================================
-def plot_top_stops(network: Network, top_n: int = 10) -> None:
-    """Будує стовпчикову діаграму топ-N зупинок за кількістю з'єднань[cite: 6]."""
-    setup_plot_style()
-
-    if not network.edges:
-        print("Мережа не містить з'єднань.")
-        return
-
-    connections_count = {stop_id: len(edges) for stop_id, edges in network.edges.items()}
-    top_stops = sorted(connections_count.items(), key=lambda item: item[1], reverse=True)[:top_n]
-
-    stop_names, counts = [], []
-    for stop_id, count in top_stops:
-        name = network.stops[stop_id].name if stop_id in network.stops else stop_id
-        stop_names.append(name[:13] + '..' if len(name) > 15 else name)
-        counts.append(count)
-
-    plt.figure()
-    bars = plt.bar(stop_names, counts, color='coral', edgecolor='black')
-    plt.title(f'Топ-{top_n} зупинок за кількістю з\'єднань')
-    plt.xlabel('Зупинка')
-    plt.ylabel('Кількість з\'єднань (відправлень)')
-    plt.xticks(rotation=45, ha='right')
-
-    for bar in bars:
-        yval = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2, yval + 0.5, int(yval), ha='center', va='bottom', fontsize=9)
-
-    plt.tight_layout()
-    plt.show()
-
-#===========================================================================================================================
 def generate_console_report(network: Network) -> None:
-    """Оформлення консольного підсумкового звіту за завантаженим фідом для Демонстрації 1[cite: 2]."""
+    """Оформлення консольного підсумкового звіту за завантаженим фідом для Демонстрації 1."""
     border = "=" * 50
     print(border)
     print(f"{'ПІДСУМКОВИЙ ЗВІТ ПО ТРАНСПОРТНІЙ МЕРЕЖІ':^50}")
