@@ -209,11 +209,18 @@ class FeedValidationReport:
     Атрибути:
         errors (list[str]): Список критичних помилок цілісності або структури.
         warnings (list[str]): Список некритичних зауважень (напр. порожні необов'язкові поля).
+        stats (dict[str, int]): Лічильники перевірених сутностей фіда.
     """
 
     def __init__(self) -> None:
         self.errors: list[str] = []
         self.warnings: list[str] = []
+        self.stats: dict[str, int] = {
+            'stops_count': 0,
+            'routes_count': 0,
+            'trips_count': 0,
+            'stop_times_count': 0,
+        }
 
     @property
     def is_valid(self) -> bool:
@@ -227,6 +234,46 @@ class FeedValidationReport:
     def add_warning(self, message: str) -> None:
         """Додає повідомлення про попередження у звіт."""
         self.warnings.append(message)
+
+    def format_summary(self) -> str:
+        """
+        Формує читабельний текстовий підсумок звіту валідації.
+        :return: відформатований рядок підсумкового звіту
+        """
+        status_label = "ВАЛІДНИЙ (OK)" if self.is_valid else "НЕВАЛІДНИЙ (FAIL)"
+        lines = [
+            "=" * 60,
+            f"ЗВІТ ВАЛІДАЦІЇ GTFS-ФІДА: {status_label}",
+            f"Критичних помилок (errors): {len(self.errors)}",
+            f"Зауважень (warnings):        {len(self.warnings)}",
+        ]
+        if any(self.stats.values()):
+            lines.append("-" * 60)
+            lines.append("Перевірено сутностей:")
+            for key, val in self.stats.items():
+                lines.append(f"  * {key}: {val}")
+
+        lines.append("-" * 60)
+        if self.errors:
+            lines.append("Критичні помилки цілісності/структури:")
+            for idx, err in enumerate(self.errors, 1):
+                lines.append(f"  [{idx}] {err}")
+        else:
+            lines.append("Критичних помилок не виявлено.")
+
+        if self.warnings:
+            lines.append("Зауваження та некритичні невідповідності:")
+            for idx, warn in enumerate(self.warnings, 1):
+                lines.append(f"  * {warn}")
+
+        lines.append("=" * 60)
+        return "\n".join(lines)
+
+    def __str__(self) -> str:
+        return self.format_summary()
+
+    def __repr__(self) -> str:
+        return f"<FeedValidationReport valid={self.is_valid} errors={len(self.errors)} warnings={len(self.warnings)}>"
 
 
 def load_agency_timezone(path: str | Path) -> str:
@@ -283,8 +330,11 @@ def validate_feed(folder: str | Path, strict: bool = False) -> FeedValidationRep
     Перевіряє:
       - Наявність обов'язкових файлів та стовпців;
       - Коректність часової зони в agency.txt (якщо файл присутній);
+      - Валідність даних зупинок у stops.txt (діапазони lat [-90, 90], lon [-180, 180]);
       - Посилальну цілісність: чи кожен stop_id зі stop_times існує в stops;
-      - Посилальну цілісність: чи кожен route_id з trips існує в routes.
+      - Посилальну цілісність: чи кожен route_id з trips існує в routes;
+      - Посилальну цілісність: чи кожен trip_id зі stop_times існує в trips;
+      - Коректність записів часу у stop_times.
 
     :param folder: шлях до папки з файлами GTFS
     :param strict: якщо True, негайно викидає виняток при критичних помилках
@@ -292,11 +342,12 @@ def validate_feed(folder: str | Path, strict: bool = False) -> FeedValidationRep
     :return: об'єкт FeedValidationReport зі списком знайдених помилок та попереджень
     :raises StopNotFoundError: у строгому режимі, якщо зупинку не знайдено
     :raises RouteNotFoundError: у строгому режимі, якщо маршрут не знайдено
-    :raises ScheduleError: у строгому режимі, якщо файли чи обов'язкові поля відсутні
+    :raises ScheduleError: у строгому режимі, якщо файли, поля чи посилання на рейси некоректні
     """
     folder = Path(folder)
     report = FeedValidationReport()
 
+    #перевірка наявності обов'язкових файлів та колонок
     for filename, required_cols in REQUIRED_GTFS_HEADERS.items():
         file_path = folder / filename
         if not file_path.exists():
@@ -328,6 +379,7 @@ def validate_feed(folder: str | Path, strict: bool = False) -> FeedValidationRep
             if strict:
                 raise ScheduleError(msg) from exc
 
+    #перевірка часової зони агентства (agency.txt)
     agency_path = folder / 'agency.txt'
     if agency_path.exists():
         try:
@@ -337,20 +389,99 @@ def validate_feed(folder: str | Path, strict: bool = False) -> FeedValidationRep
             if strict:
                 raise
 
+    #якщо критичні файли відсутні, подальшу перевірку цілісності припиняємо
     if not (folder / 'stops.txt').exists() or not (folder / 'stop_times.txt').exists():
         return report
 
+    #Валідація зупинок (stops.txt): наявність ID, валідність координат і назв
     known_stops: set[str] = set()
     for row in read_csv(folder / 'stops.txt'):
         stop_id = row.get('stop_id', '').strip()
         if stop_id:
             known_stops.add(stop_id)
+        name = row.get('stop_name', '').strip()
+        if not name and stop_id:
+            report.add_warning(f"Зупинка '{stop_id}' має порожню назву stop_name")
 
+        lat_str = row.get('stop_lat', '').strip()
+        lon_str = row.get('stop_lon', '').strip()
+        if lat_str and lon_str:
+            try:
+                lat = float(lat_str)
+                lon = float(lon_str)
+                if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+                    msg = f"Зупинка '{stop_id}' має некоректні координати: lat={lat}, lon={lon}"
+                    report.add_error(msg)
+                    if strict:
+                        raise ScheduleError(msg)
+            except ValueError:
+                msg = f"Зупинка '{stop_id}' має нечислові координати: lat='{lat_str}', lon='{lon_str}'"
+                report.add_error(msg)
+                if strict:
+                    raise ScheduleError(msg)
+    report.stats['stops_count'] = len(known_stops)
+
+    #валідація маршрутів (routes.txt) та рейсів (trips.txt)
+    known_routes: set[str] = set()
+    if (folder / 'routes.txt').exists():
+        for row in read_csv(folder / 'routes.txt'):
+            route_id = row.get('route_id', '').strip()
+            if route_id:
+                known_routes.add(route_id)
+        report.stats['routes_count'] = len(known_routes)
+
+    known_trips: set[str] = set()
+    if (folder / 'trips.txt').exists():
+        missing_routes: set[str] = set()
+        for row in read_csv(folder / 'trips.txt'):
+            trip_id = row.get('trip_id', '').strip()
+            if trip_id:
+                known_trips.add(trip_id)
+            route_id = row.get('route_id', '').strip()
+            if route_id and route_id not in known_routes:
+                missing_routes.add(route_id)
+
+        report.stats['trips_count'] = len(known_trips)
+        for missing in sorted(missing_routes):
+            msg = f"Маршрут '{missing}' з trips.txt не знайдено у routes.txt"
+            report.add_error(msg)
+            if strict:
+                raise RouteNotFoundError(msg)
+
+    #валідація розкладу (stop_times.txt): зв'язок зі stops, trips та валідність часу
     missing_stops: set[str] = set()
+    missing_trips: set[str] = set()
+    stop_times_count = 0
+
     for row in read_csv(folder / 'stop_times.txt'):
+        stop_times_count += 1
         stop_id = row.get('stop_id', '').strip()
         if stop_id and stop_id not in known_stops:
             missing_stops.add(stop_id)
+
+        trip_id = row.get('trip_id', '').strip()
+        if trip_id and known_trips and trip_id not in known_trips:
+            missing_trips.add(trip_id)
+
+        # Перевірка валідності форматів часу
+        arr_str = row.get('arrival_time', '').strip()
+        dep_str = row.get('departure_time', '').strip()
+        if arr_str and dep_str:
+            try:
+                arr_min = time_to_minutes(arr_str)
+                dep_min = time_to_minutes(dep_str)
+                if dep_min < arr_min:
+                    report.add_warning(
+                        f"Рейс '{trip_id}', зупинка '{stop_id}': час відправлення ({dep_str}) "
+                        f"раніший за час прибуття ({arr_str})"
+                    )
+            except ScheduleError:
+                msg = f"Рейс '{trip_id}', зупинка '{stop_id}': некоректний формат часу arrival='{arr_str}', departure='{dep_str}'"
+                report.add_error(msg)
+                if strict:
+                    raise ScheduleError(msg)
+
+    report.stats['stop_times_count'] = stop_times_count
 
     for missing in sorted(missing_stops):
         msg = f"Зупинку '{missing}' зі stop_times.txt не знайдено у stops.txt"
@@ -358,36 +489,26 @@ def validate_feed(folder: str | Path, strict: bool = False) -> FeedValidationRep
         if strict:
             raise StopNotFoundError(msg)
 
-    if (folder / 'routes.txt').exists() and (folder / 'trips.txt').exists():
-        known_routes: set[str] = set()
-        for row in read_csv(folder / 'routes.txt'):
-            route_id = row.get('route_id', '').strip()
-            if route_id:
-                known_routes.add(route_id)
-
-        missing_routes: set[str] = set()
-        for row in read_csv(folder / 'trips.txt'):
-            route_id = row.get('route_id', '').strip()
-            if route_id and route_id not in known_routes:
-                missing_routes.add(route_id)
-
-        for missing in sorted(missing_routes):
-            msg = f"Маршрут '{missing}' з trips.txt не знайдено у routes.txt"
-            report.add_error(msg)
-            if strict:
-                raise RouteNotFoundError(msg)
+    for missing in sorted(missing_trips):
+        msg = f"Рейс '{missing}' зі stop_times.txt не знайдено у trips.txt"
+        report.add_error(msg)
+        if strict:
+            raise ScheduleError(msg)
 
     return report
 
 
-def load_network(folder: str | Path, transfer_time: int = 5) -> Network:
+def load_network(folder: str | Path, transfer_time: int = 5, strict_validation: bool = False) -> Network:
     """
     Завантажує GTFS-фід із папки, визначає часову зону та будує мережу.
     :param folder: шлях до папки з файлами GTFS (напр. data/gtfs_static)
     :param transfer_time: час на пересадку у хвилинах
-    :return: готовий Network із полем timezone
+    :param strict_validation: якщо True, валідатор викидає винятки при критичних помилках
+    :return: готовий Network із полем timezone та прикріпленим звітом validation_report
     """
     folder = Path(folder)
+    
+    report = validate_feed(folder, strict=strict_validation)
 
     stops = load_stops(folder / 'stops.txt')
     stop_times = load_stop_times(folder / 'stop_times.txt')
@@ -403,4 +524,5 @@ def load_network(folder: str | Path, transfer_time: int = 5) -> Network:
     else:
         network.timezone = 'UTC'
 
+    network.validation_report = report
     return network
