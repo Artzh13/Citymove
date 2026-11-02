@@ -7,7 +7,9 @@ from src.citymove.domain import (
     Passenger,
     Network, 
     StopNotFoundError, 
-    DisconnectedNetworkError
+    DisconnectedNetworkError,
+    ScheduleError,
+    Tram
 )
 
 class TestDomain(unittest.TestCase):

@@ -20,7 +20,7 @@ def load_config(config_path="config.json") -> dict:
         return {
             "transfer_penalty_min": 5,
             "walking_speed_kmh": 4.5,
-            "default_feed_path": "data/gtfs.zip"
+            "default_feed_path": "data/gtfs_static"
         }
     except json.JSONDecodeError as e:
         logger.error(f"Помилка читання конфігурації {config_path}: {e}")

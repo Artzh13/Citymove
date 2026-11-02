@@ -2,6 +2,6 @@
   "transfer_penalty_min": 5,
   "walking_speed_kmh": 4.5,
   "max_walking_distance_m": 800,
-  "default_feed_path": "data/gtfs.zip",
+  "default_feed_path": "data/gtfs_static",
   "log_level": "INFO"
 }
