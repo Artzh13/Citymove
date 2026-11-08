@@ -9,7 +9,9 @@ from src.citymove.domain import (
     StopNotFoundError, 
     DisconnectedNetworkError,
     ScheduleError,
-    Tram
+    Tram,
+    DuplicateEntityError,
+    NetworkError,
 )
 
 class TestDomain(unittest.TestCase):
@@ -207,6 +209,124 @@ class TestDomain(unittest.TestCase):
         # Обидва маршрути та обидва рейси мають бути видалені
         self.assertEqual(len(net.routes), 0)
         self.assertEqual(len(net.trips), 0)
+
+
+class TestMagicMethods(unittest.TestCase):
+    """Тиждень 5: магічні методи Route, Network, Stop."""
+
+    def setUp(self):
+        self.net = Network()
+        for sid, name in [("s1", "Центр"), ("s2", "Ринок"), ("s3", "Вокзал")]:
+            self.net.add_node(Stop(sid, name, 49.8, 24.0))
+        self.route = Route("r1", "1", Bus(), ["s1", "s2", "s3"])
+
+    def test_route_iter_yields_stops_in_order(self):
+        self.assertEqual(list(self.route), ["s1", "s2", "s3"])
+        # ітерацію можна повторювати — кожен виклик дає новий ітератор
+        self.assertEqual([s for s in self.route], ["s1", "s2", "s3"])
+
+    def test_route_iter_empty_route(self):
+        """Межовий випадок: маршрут без зупинок нічого не повертає."""
+        self.assertEqual(list(Route("r0", "0", Bus(), [])), [])
+
+    def test_route_copies_stops_list(self):
+        stops = ["s1", "s2"]
+        route = Route("r2", "2", Bus(), stops)
+        stops.append("s3")
+        self.assertEqual(list(route), ["s1", "s2"])
+
+    def test_network_len(self):
+        self.assertEqual(len(self.net), 3)
+        self.assertEqual(len(Network()), 0)
+        self.net.remove_node("s3")
+        self.assertEqual(len(self.net), 2)
+
+    def test_network_contains_accepts_id_and_stop(self):
+        self.assertIn("s1", self.net)
+        self.assertIn(Stop("s2", "Інша назва", 0.0, 0.0), self.net)
+        self.assertNotIn("missing", self.net)
+
+    def test_network_contains_wrong_type(self):
+        """Помилкові дані: об'єкт непідтримуваного типу не викликає помилку, а просто відсутній."""
+        self.assertNotIn(42, self.net)
+        self.assertNotIn(None, self.net)
+
+    def test_network_iter_yields_stop_objects(self):
+        self.assertEqual({s.stop_id for s in self.net}, {"s1", "s2", "s3"})
+
+    def test_stop_repr_roundtrip(self):
+        stop = Stop("s1", "Центр", 49.84, 24.03)
+        self.assertEqual(repr(stop), "Stop('s1', 'Центр', 49.84, 24.03)")
+        self.assertEqual(eval(repr(stop)), stop)
+
+    def test_stop_eq_by_id(self):
+        self.assertEqual(Stop("s1", "Центр", 49.0, 24.0), Stop("s1", "Нова назва", 50.0, 25.0))
+        self.assertNotEqual(Stop("s1", "Центр", 49.0, 24.0), Stop("s2", "Центр", 49.0, 24.0))
+        self.assertNotEqual(Stop("s1", "Центр", 49.0, 24.0), "s1")
+
+    def test_stop_hashable_consistent_with_eq(self):
+        stops = {Stop("s1", "А", 49.0, 24.0), Stop("s1", "Б", 49.0, 24.0), Stop("s2", "В", 49.0, 24.0)}
+        self.assertEqual(len(stops), 2)
+
+
+class TestNetworkIntegrity(unittest.TestCase):
+    """Валідація та цілісність графа в Network."""
+
+    def setUp(self):
+        self.net = Network()
+        for sid in ["a", "b", "c"]:
+            self.net.add_node(Stop(sid, sid.upper(), 49.0, 24.0))
+        self.route = Route("r1", "1", Bus(), ["a", "b", "c"])
+        self.net.add_route(self.route)
+
+    def test_duplicate_raises_domain_error(self):
+        with self.assertRaises(DuplicateEntityError) as ctx:
+            self.net.add_route(self.route)
+        self.assertIsInstance(ctx.exception, NetworkError)
+        self.assertEqual(ctx.exception.entity_id, "r1")
+
+    def test_add_trip_builds_sorted_edges(self):
+        self.net.add_trip(Trip("t2", self.route, 600, "WD", [("a", 600, 600), ("b", 610, 611)]))
+        self.net.add_trip(Trip("t1", self.route, 480, "WD", [("a", 480, 480), ("b", 490, 491), ("c", 500, 500)]))
+        self.assertEqual(self.net.edges["a"], [("b", 480, 10, "t1"), ("b", 600, 10, "t2")])
+        self.assertEqual(self.net.edges["b"], [("c", 491, 9, "t1")])
+
+    def test_add_trip_rejects_time_going_back(self):
+        trip = Trip("t1", self.route, 480, "WD", [("a", 480, 480), ("b", 470, 471)])
+        with self.assertRaises(ScheduleError):
+            self.net.add_trip(trip)
+        self.assertNotIn("t1", self.net.trips)
+
+    def test_add_trip_rejects_unknown_stop(self):
+        trip = Trip("t1", self.route, 480, "WD", [("a", 480, 480), ("zzz", 490, 490)])
+        with self.assertRaises(StopNotFoundError):
+            self.net.add_trip(trip)
+
+    def test_remove_node_cleans_edges_of_removed_trips(self):
+        self.net.add_trip(Trip("t1", self.route, 480, "WD", [("a", 480, 480), ("b", 490, 491), ("c", 500, 500)]))
+        self.net.remove_node("c")
+        self.assertNotIn("t1", self.net.trips)
+        self.assertEqual(self.net.edges["a"], [])
+
+    def test_remove_node_in_already_disconnected_network(self):
+        """Мережа з двох незалежних частин: видалення «листка» дозволене."""
+        net = Network()
+        for sid in ["a", "b", "x", "y"]:
+            net.add_node(Stop(sid, sid, 49.0, 24.0))
+        net.edges["a"] = [("b", 0, 1, "t1")]
+        net.edges["x"] = [("y", 0, 1, "t2")]
+        self.assertFalse(net.is_connected())
+        net.remove_node("b")
+        self.assertNotIn("b", net)
+
+    def test_remove_cut_vertex_keeps_network_untouched(self):
+        self.net.add_trip(Trip("t1", self.route, 480, "WD", [("a", 480, 480), ("b", 490, 491), ("c", 500, 500)]))
+        with self.assertRaises(DisconnectedNetworkError):
+            self.net.remove_node("b")
+        self.assertEqual(len(self.net), 3)
+        self.assertIn("t1", self.net.trips)
+        self.assertTrue(self.net.is_connected())
+
 
 if __name__ == '__main__':
     unittest.main()

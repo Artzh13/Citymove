@@ -480,7 +480,7 @@ def generate_transfer_benchmark_network() -> domain.Network:
 
 def format_benchmark_report(network: domain.Network | None = None) -> str:
     """Генерує текстовий підсумковий звіт верифікації ядра Дейкстри для Демонстрації 1."""
-    net = network or generate_radial_ring_network()
+    net = network if network is not None else generate_radial_ring_network()
     bench_results = verify_synthetic_network()
     t_net = generate_transfer_benchmark_network()
 
