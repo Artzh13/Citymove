@@ -1,4 +1,5 @@
 import unittest
+import numpy as np
 
 from src.citymove.core import (
     generate_radial_ring_network,
@@ -26,6 +27,11 @@ from src.citymove.domain import (
     DisconnectedNetworkError,
 )
 
+from citymove.core import (
+    build_adjacency_matrix,
+    build_travel_time_matrix,
+    generate_transfer_benchmark_network,
+)
 
 def make_network(trips: list[tuple[str, list[tuple[str, int, int]]]]) -> Network:
     """Створює синтетичну мережу із зупинками A, B, C, D та заданими рейсами."""
@@ -332,6 +338,69 @@ class TestWeek4TransferBenchmark(unittest.TestCase):
         self.assertIsInstance(report, str)
         self.assertIn("РЕЗУЛЬТАТИ ВЕРИФІКАЦІЇ", report)
         self.assertIn("[OK]", report)
+
+
+class TestNumpyMatrices(unittest.TestCase):
+    def setUp(self):
+        """Використовуємо вже існуючу бенчмарк-мережу A->B->C->D."""
+        self.net = generate_transfer_benchmark_network()
+
+    def test_adjacency_shape(self):
+        """Матриця має форму N×N."""
+        idx, mat = build_adjacency_matrix(self.net)
+        N = len(self.net.stops)
+        self.assertEqual(mat.shape, (N, N))
+
+    def test_adjacency_dtype(self):
+        """Матриця має тип float64."""
+        _, mat = build_adjacency_matrix(self.net)
+        self.assertEqual(mat.dtype, np.float64)
+
+    def test_adjacency_known_edges(self):
+        """A->B, B->D мають бути 1; A->D — 0 (немає прямого перегону)."""
+        idx, mat = build_adjacency_matrix(self.net)
+        self.assertEqual(mat[idx["A"], idx["B"]], 1.0)
+        self.assertEqual(mat[idx["B"], idx["D"]], 1.0)
+        self.assertEqual(mat[idx["A"], idx["D"]], 0.0)
+
+    def test_adjacency_no_self_loops(self):
+        """Діагональ матриці суміжності = 0."""
+        _, mat = build_adjacency_matrix(self.net)
+        self.assertTrue(np.all(np.diag(mat) == 0.0))
+
+    def test_travel_time_shape(self):
+        """Матриця часів має форму N×N."""
+        idx, mat = build_travel_time_matrix(self.net)
+        N = len(self.net.stops)
+        self.assertEqual(mat.shape, (N, N))
+
+    def test_travel_time_diagonal_zero(self):
+        """Діагональ матриці часів = 0."""
+        _, mat = build_travel_time_matrix(self.net)
+        self.assertTrue(np.all(np.diag(mat) == 0.0))
+
+    def test_travel_time_known_values(self):
+        """
+        В бенчмарк-мережі:
+        t_direct: A(600)->B(610)->C(620)->D(630) => A->B=10, B->C=10, C->D=10
+        t_exp1:   A(600)->B(608)                 => A->B=8  (менше за 10, тут мінімум!)
+        t_exp2:   B(610)->D(618)                 => B->D=8
+        """
+        idx, mat = build_travel_time_matrix(self.net)
+        self.assertEqual(mat[idx["A"], idx["B"]], 8.0)   # мінімум з двох рейсів
+        self.assertEqual(mat[idx["B"], idx["C"]], 10.0)
+        self.assertEqual(mat[idx["B"], idx["D"]], 8.0)
+        self.assertTrue(np.isinf(mat[idx["A"], idx["D"]]))  # немає прямого
+        
+    def test_travel_time_isolated_stop(self):
+        """ISO — ізольована зупинка, всі її рядки/стовпці = inf (крім діагоналі)."""
+        idx, mat = build_travel_time_matrix(self.net)
+        iso = idx["ISO"]
+        row = mat[iso, :]
+        col = mat[:, iso]
+        # Крім діагоналі — все inf
+        self.assertTrue(np.isinf(row[np.arange(len(row)) != iso]).all())
+        self.assertTrue(np.isinf(col[np.arange(len(col)) != iso]).all())
 
 
 if __name__ == '__main__':
