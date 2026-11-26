@@ -1,6 +1,8 @@
 import heapq
+import numpy as np
 from dataclasses import dataclass, field
 from . import domain
+
 
 INF: float = 1e18
 
@@ -343,6 +345,85 @@ def calculate_network_metrics(network: domain.Network) -> dict[str, float | dict
         "diameter": diam,
         "average_path_length": avg_len,
     }
+
+
+def build_adjacency_matrix(network: domain.Network,) -> tuple[dict[str, int], np.ndarray]:
+    """
+    Будує бінарну матрицю суміжності (N×N) засобами NumPy.
+    Елемент matrix[i, j] = 1.0 якщо існує хоча б один рейс,
+    що має прямий перегін зі зупинки i до зупинки j.
+    Петлі (i == j) залишаються 0.
+    Параметри:
+        network: екземпляр Network з заповненими trips та stops.
+    Повертає:
+        (stop_to_idx, matrix):
+            stop_to_idx — маппінг stop_id -> рядковий індекс у матриці,
+            matrix — np.ndarray форми (N, N), dtype=float64.
+    """
+    stop_ids = list(network.stops.keys())
+    stop_to_idx = {sid: i for i, sid in enumerate(stop_ids)}
+    N = len(stop_ids)
+    
+    matrix = np.zeros((N, N), dtype=np.float64)
+    for trip in network.trips.values():
+        stop_times = trip.stop_times
+        for j in range(len(stop_times) - 1):
+            u_id = stop_times[j][0]
+            v_id = stop_times[j + 1][0]
+            if u_id in stop_to_idx and v_id in stop_to_idx:
+                u = stop_to_idx[u_id]
+                v = stop_to_idx[v_id]
+                # Присвоєння через числові індекси — O(1), без пошуку по словнику
+                matrix[u, v] = 1.0
+    return stop_to_idx, matrix
+
+
+def build_travel_time_matrix(network: domain.Network,) -> tuple[dict[str, int], np.ndarray]:
+    """
+    Будує матрицю мінімальних часів переїзду (N×N) засобами NumPy.
+    Елемент matrix[i, j] = мінімальний час у хвилинах між зупинками i та j
+    за прямим перегоном хоча б одного рейсу. Якщо прямого перегону немає —
+    значення залишається np.inf.
+    Діагональ matrix[i, i] = 0.0.
+    Алгоритм:
+        Для кожного рейсу обходимо всі пари суміжних зупинок.
+        travel_time = arrival[j+1] - departure[j].
+        У матрицю записуємо мінімум по всіх рейсах: np.minimum.
+    Параметри:
+        network: екземпляр Network з заповненими trips та stops.
+    Повертає:
+        (stop_to_idx, matrix):
+            stop_to_idx — маппінг stop_id -> рядковий індекс,
+            matrix — np.ndarray форми (N, N), dtype=float64.
+    """
+    stop_ids = list(network.stops.keys())
+    stop_to_idx = {sid: i for i, sid in enumerate(stop_ids)}
+    N = len(stop_ids)
+    # np.full заповнює масив заданим значенням — тут np.inf
+    # np.inf — спеціальна константа "нескінченність" у float64
+    matrix = np.full((N, N), np.inf, dtype=np.float64)
+    # Відстань від вершини до себе = 0 (як у матриці відстаней)
+    # np.fill_diagonal — векторна операція, швидше ніж цикл по діагоналі
+    np.fill_diagonal(matrix, 0.0)
+    for trip in network.trips.values():
+        stop_times = trip.stop_times
+        for j in range(len(stop_times) - 1):
+            u_id, _, dep = stop_times[j] #u_id - ID поточної зупинки;час прибуття на поточну зупинку — нам не треба, тому "_"
+            v_id, arr, _ = stop_times[j + 1] #v_id - ID наступної зупинки; час відправлення з наступної — не треба, тому "_"
+            if u_id not in stop_to_idx or v_id not in stop_to_idx:
+                continue
+            travel = float(arr - dep)
+            if travel < 0:
+                # Некоректні дані — пропускаємо
+                continue
+            u = stop_to_idx[u_id] #Числовий індекс u_id у матриці (0)
+            v = stop_to_idx[v_id] #Числовий індекс v_id у матриці (1)
+            # Зберігаємо МІНІМАЛЬНИЙ час серед усіх рейсів на цьому перегоні
+            # Це ключовий момент: між двома зупинками може бути кілька рейсів
+            if travel < matrix[u, v]:
+                matrix[u, v] = travel
+    return stop_to_idx, matrix
+
 
 
 class TransportRouter:
